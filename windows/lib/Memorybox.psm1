@@ -13,18 +13,97 @@ function Get-MemoryboxConfig {
     [CmdletBinding()]
     param()
 
-    $h  = [Environment]::GetEnvironmentVariable("MEMORYBOX_HOST",     "User")
-    $p  = [Environment]::GetEnvironmentVariable("MEMORYBOX_PORT",     "User")
-    $u  = [Environment]::GetEnvironmentVariable("MEMORYBOX_USER",     "User")
-    $pw = [Environment]::GetEnvironmentVariable("MEMORYBOX_PASSWORD", "User")
+    $h  = [Environment]::GetEnvironmentVariable("MEMORYBOX_HOST",      "User")
+    $p  = [Environment]::GetEnvironmentVariable("MEMORYBOX_PORT",      "User")
+    $u  = [Environment]::GetEnvironmentVariable("MEMORYBOX_USER",      "User")
+    $pw = [Environment]::GetEnvironmentVariable("MEMORYBOX_PASSWORD",  "User")
+    $n  = [Environment]::GetEnvironmentVariable("MEMORYBOX_NODE_NAME", "User")
 
     [PSCustomObject]@{
         Host        = $h
         Port        = $p
         User        = $u
+        NodeName    = $n
         HasPassword = -not [string]::IsNullOrEmpty($pw)
         BaseUrl     = if ($h -and $p) { "http://${h}:${p}" } else { $null }
-        IsComplete  = ($h -and $p -and $u -and $pw)
+        NodePath    = if ($h -and $n) { "\\${h}\home\dmn-${n}" } else { $null }
+        IsComplete  = ($h -and $p -and $u -and $pw -and $n)
+    }
+}
+
+function Test-MemoryboxNodeName {
+    <#
+    .SYNOPSIS
+    Validates a candidate node name against the naming rules. Returns $true / $false; -Detailed for explanation.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$Name,
+        [switch]$Detailed
+    )
+
+    $pattern = '^[a-z0-9](?:[a-z0-9-]{0,30}[a-z0-9])?$'
+    $ok = $Name -cmatch $pattern
+    if ($Detailed) {
+        [PSCustomObject]@{
+            Name    = $Name
+            Valid   = $ok
+            Reason  = if ($ok) { 'ok' }
+                      elseif ($Name.Length -lt 1 -or $Name.Length -gt 32) { 'must be 1-32 characters' }
+                      elseif ($Name -cnotmatch '^[a-z0-9-]+$') { 'only lowercase letters, digits, hyphens allowed' }
+                      elseif ($Name.StartsWith('-') -or $Name.EndsWith('-')) { 'must not start or end with a hyphen' }
+                      else { 'invalid' }
+        }
+    } else {
+        $ok
+    }
+}
+
+function Get-MemoryboxNodes {
+    <#
+    .SYNOPSIS
+    Lists existing node directories on the memorybox (i.e. dmn-* under \\host\home).
+    Requires that an SMB session is established (run Connect-MemoryboxSmb first).
+    #>
+    [CmdletBinding()]
+    param()
+
+    $cfg = Get-MemoryboxConfig
+    if (-not $cfg.Host) { throw "MEMORYBOX_HOST not set." }
+
+    $homePath = "\\$($cfg.Host)\home"
+    if (-not (Test-Path $homePath)) {
+        throw "Cannot reach $homePath. Run Connect-MemoryboxSmb first."
+    }
+
+    Get-ChildItem -Path $homePath -Directory -Filter 'dmn-*' -ErrorAction SilentlyContinue |
+        ForEach-Object {
+            [PSCustomObject]@{
+                NodeName = $_.Name -replace '^dmn-',''
+                Path     = $_.FullName
+                Created  = $_.CreationTime
+            }
+        }
+}
+
+function Test-MemoryboxNodeNameAvailable {
+    <#
+    .SYNOPSIS
+    Checks whether a candidate node name is free on the memorybox (no dmn-<name> dir exists).
+    Returns an object with Available + Conflict info.
+    #>
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][string]$Name)
+
+    Connect-MemoryboxSmb
+    $cfg = Get-MemoryboxConfig
+    $candidatePath = "\\$($cfg.Host)\home\dmn-$Name"
+    $exists = Test-Path $candidatePath
+    [PSCustomObject]@{
+        Name      = $Name
+        Available = -not $exists
+        Path      = $candidatePath
+        Existing  = if ($exists) { (Get-Item $candidatePath).CreationTime } else { $null }
     }
 }
 
@@ -191,4 +270,7 @@ Export-ModuleMember -Function `
     Test-MemoryboxConnection, `
     Test-MemoryboxAuth, `
     Get-MemoryboxShares, `
-    Connect-MemoryboxSmb
+    Connect-MemoryboxSmb, `
+    Test-MemoryboxNodeName, `
+    Get-MemoryboxNodes, `
+    Test-MemoryboxNodeNameAvailable

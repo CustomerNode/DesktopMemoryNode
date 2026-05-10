@@ -12,6 +12,26 @@ that setup is portable.
 | `MEMORYBOX_PORT`      | Port of the box's primary admin endpoint | `5000`                   | no        |
 | `MEMORYBOX_USER`      | Username for the node's NAS account      | `donc`                   | no        |
 | `MEMORYBOX_PASSWORD`  | Password for that account                | -                        | **yes**   |
+| `MEMORYBOX_NODE_NAME` | Unique name for this node (slug)         | `kitchen`                | no        |
+
+### Node naming
+
+Every node that backs up to the memorybox must have a unique `MEMORYBOX_NODE_NAME`.
+This name is used to partition each node's backups into its own area on the NAS,
+so multiple machines can share the same NAS account without conflicts.
+
+**Format:** lowercase letters, digits, and hyphens. 1–32 chars. Must not start
+or end with a hyphen. Regex: `^[a-z0-9](?:[a-z0-9-]{0,30}[a-z0-9])?$`.
+
+**Examples:** `kitchen`, `office`, `laptop`, `studio-mac`.
+
+**Storage convention:** each node's restic repo lives at
+`\\<MEMORYBOX_HOST>\home\dmn-<MEMORYBOX_NODE_NAME>\` on Windows, or
+`smb://<MEMORYBOX_HOST>/home/dmn-<MEMORYBOX_NODE_NAME>/` semantically.
+
+**Conflict checking:** setup refuses to register a node name that already has
+a `dmn-<name>` directory on the NAS unless `-Reuse` is passed (e.g., reinstalling
+on the same machine after wipe).
 
 ### Scope
 - Always **user-scoped**, never machine-scoped. Setup never requires admin.
