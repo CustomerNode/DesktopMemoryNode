@@ -599,20 +599,26 @@ function Invoke-Restic {
 function Get-DefaultBackupTargets {
     <#
     .SYNOPSIS
-    Returns the default backup-targets config: include user data, exclude caches and OS junk.
+    Returns the default backup-targets config. Uses [Environment]::GetFolderPath
+    which honors Windows known-folder redirection (OneDrive, Group Policy, etc.),
+    so "Documents" finds the real folder even when it lives under OneDrive.
+    Only includes folders that actually exist on this machine.
     #>
     [CmdletBinding()]
     param()
 
+    $candidates = @(
+        [Environment]::GetFolderPath('MyDocuments'),
+        [Environment]::GetFolderPath('Desktop'),
+        [Environment]::GetFolderPath('MyPictures'),
+        [Environment]::GetFolderPath('MyVideos'),
+        [Environment]::GetFolderPath('MyMusic'),
+        # Downloads has no enum on .NET Framework 4.x; use the registry / SHGetKnownFolderPath fallback
+        (Join-Path $env:USERPROFILE 'Downloads')
+    ) | Where-Object { $_ -and (Test-Path $_) } | Select-Object -Unique
+
     [PSCustomObject]@{
-        include = @(
-            (Join-Path $env:USERPROFILE 'Documents'),
-            (Join-Path $env:USERPROFILE 'Desktop'),
-            (Join-Path $env:USERPROFILE 'Pictures'),
-            (Join-Path $env:USERPROFILE 'Videos'),
-            (Join-Path $env:USERPROFILE 'Music'),
-            (Join-Path $env:USERPROFILE 'Downloads')
-        )
+        include = @($candidates)
         exclude = @(
             '**/node_modules',
             '**/.cache',

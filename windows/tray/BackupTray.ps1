@@ -40,6 +40,23 @@ try {
     throw
 }
 
+# Tell Windows to treat this powershell.exe as a separate "app" in the taskbar
+# (not grouped with other powershell windows / not showing the powershell icon).
+# Combined with $form.Icon, this makes the taskbar entry show the Memory Box icon.
+try {
+    if (-not ('DmnNative' -as [type])) {
+        Add-Type -Namespace DmnNative -Name Shell32 -MemberDefinition @"
+            [System.Runtime.InteropServices.DllImport("shell32.dll", SetLastError = true)]
+            public static extern void SetCurrentProcessExplicitAppUserModelID(
+                [System.Runtime.InteropServices.MarshalAs(System.Runtime.InteropServices.UnmanagedType.LPWStr)] string AppID);
+"@
+    }
+    [DmnNative.Shell32]::SetCurrentProcessExplicitAppUserModelID('CustomerNode.DesktopMemoryNode')
+    Write-DebugLine "AppUserModelID set"
+} catch {
+    Write-DebugLine "AppUserModelID failed (non-fatal): $($_.Exception.Message)"
+}
+
 $here     = Split-Path -Parent $MyInvocation.MyCommand.Path
 $libPath  = Join-Path $here '..\lib\Memorybox.psm1'
 $repoRoot = (Resolve-Path (Join-Path $here '..\..')).Path
@@ -510,19 +527,33 @@ function Show-StatusForm {
     $actionsLabel.Location  = New-Object System.Drawing.Point(25, 480)
     $form.Controls.Add($actionsLabel)
 
+    # Action buttons. Critical: do NOT close the dashboard before launching the
+    # next form; Form.Close() is a deferred operation and the message pump gets
+    # confused if a modal opens before the close finishes processing. Wrap each
+    # action in try/catch so a failure shows a popup instead of crashing the
+    # process silently.
     $btnSave = New-PrimaryButton -Text "Save my files now" -Width 180 -Height 42
     $btnSave.Location = New-Object System.Drawing.Point(25, 515)
-    $btnSave.Add_Click({ $form.Close(); Start-ManualBackup }.GetNewClosure())
+    $btnSave.Add_Click({
+        try { Start-ManualBackup }
+        catch { try { [System.Windows.Forms.MessageBox]::Show("Couldn't start backup: $($_.Exception.Message)", "Memory Box", 'OK', 'Error') | Out-Null } catch {} }
+    }.GetNewClosure())
     $form.Controls.Add($btnSave)
 
     $btnBrowse = New-PrimaryButton -Text "See what's been saved" -Width 200 -Height 42
     $btnBrowse.Location = New-Object System.Drawing.Point(215, 515)
-    $btnBrowse.Add_Click({ $form.Close(); Show-SnapshotsForm }.GetNewClosure())
+    $btnBrowse.Add_Click({
+        try { Show-SnapshotsForm }
+        catch { try { [System.Windows.Forms.MessageBox]::Show("Couldn't open snapshots: $($_.Exception.Message)", "Memory Box", 'OK', 'Error') | Out-Null } catch {} }
+    }.GetNewClosure())
     $form.Controls.Add($btnBrowse)
 
     $btnTest = New-PrimaryButton -Text "Test restore" -Width 130 -Height 42
     $btnTest.Location = New-Object System.Drawing.Point(425, 515)
-    $btnTest.Add_Click({ $form.Close(); Start-TestRestore }.GetNewClosure())
+    $btnTest.Add_Click({
+        try { Start-TestRestore }
+        catch { try { [System.Windows.Forms.MessageBox]::Show("Test restore failed: $($_.Exception.Message)", "Memory Box", 'OK', 'Error') | Out-Null } catch {} }
+    }.GetNewClosure())
     $form.Controls.Add($btnTest)
 
     # Close button
