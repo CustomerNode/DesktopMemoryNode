@@ -128,12 +128,17 @@ function Save-MemoryBoxIcon {
     Add-Type -AssemblyName System.Drawing -ErrorAction Stop
 
     $sizes = @(16, 24, 32, 48, 64, 128, 256)
-    $pngBlobs = foreach ($s in $sizes) {
+    # Build a list of byte[] -- use a typed list so each element stays a byte[]
+    # instead of getting unrolled by the pipeline.
+    $pngBlobs = New-Object 'System.Collections.Generic.List[byte[]]'
+    foreach ($s in $sizes) {
         $bmp = New-MemoryBoxBitmap -Size $s
         $ms  = New-Object System.IO.MemoryStream
         $bmp.Save($ms, [System.Drawing.Imaging.ImageFormat]::Png)
+        $bytes = $ms.ToArray()
+        $ms.Dispose()
         $bmp.Dispose()
-        ,@($ms.ToArray())
+        [void]$pngBlobs.Add($bytes)
     }
 
     $fs = [System.IO.File]::Open($Path, 'Create')

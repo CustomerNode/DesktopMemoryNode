@@ -408,7 +408,7 @@ function Show-StatusForm {
     $state = Get-NodeState
     $disp  = Get-DmnDisplayConfig
 
-    $form = New-MemoryForm -Title "How your Memory Box is doing" -Width 660 -Height 600
+    $form = New-MemoryForm -Title "How your Memory Box is doing" -Width 700 -Height 670
 
     # Hero greeting
     $userName = if ($disp.UserName) { $disp.UserName } else { '' }
@@ -540,14 +540,38 @@ function Show-StatusForm {
     }
     $nextCard.Controls.Add($nextText)
 
+    # Action buttons row
+    $actionsLabel = New-Object System.Windows.Forms.Label
+    $actionsLabel.Font      = $Font.Heading
+    $actionsLabel.ForeColor = $Theme.Text
+    $actionsLabel.Text      = "What would you like to do?"
+    $actionsLabel.AutoSize  = $true
+    $actionsLabel.Location  = New-Object System.Drawing.Point(25, 480)
+    $form.Controls.Add($actionsLabel)
+
+    $btnSave = New-PrimaryButton -Text "Save my files now" -Width 180 -Height 42
+    $btnSave.Location = New-Object System.Drawing.Point(25, 515)
+    $btnSave.Add_Click({ $form.Close(); Start-ManualBackup }.GetNewClosure())
+    $form.Controls.Add($btnSave)
+
+    $btnBrowse = New-PrimaryButton -Text "See what's been saved" -Width 200 -Height 42
+    $btnBrowse.Location = New-Object System.Drawing.Point(215, 515)
+    $btnBrowse.Add_Click({ $form.Close(); Show-SnapshotsForm }.GetNewClosure())
+    $form.Controls.Add($btnBrowse)
+
+    $btnTest = New-PrimaryButton -Text "Test restore" -Width 130 -Height 42
+    $btnTest.Location = New-Object System.Drawing.Point(425, 515)
+    $btnTest.Add_Click({ $form.Close(); Start-TestRestore }.GetNewClosure())
+    $form.Controls.Add($btnTest)
+
     # Close button
-    $closeBtn = New-PrimaryButton -Text "Close" -Width 110
-    $closeBtn.Location = New-Object System.Drawing.Point(515, 490)
+    $closeBtn = New-SecondaryButton -Text "Close" -Width 80 -Height 42
+    $closeBtn.Location = New-Object System.Drawing.Point(565, 515)
     $closeBtn.Add_Click({ $form.Close() }.GetNewClosure())
     $form.AcceptButton = $closeBtn
     $form.Controls.Add($closeBtn)
 
-    Add-Footer -Form $form -Y 530
+    Add-Footer -Form $form -Y 580
 
     $form.ShowDialog() | Out-Null
 }
