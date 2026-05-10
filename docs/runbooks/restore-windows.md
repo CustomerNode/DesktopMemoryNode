@@ -140,4 +140,4 @@ a new `MEMORYBOX_NODE_NAME` (this creates a fresh `dmn-<newname>` directory).
 3. Run `windows\setup\Test-Setup.ps1` to see what's working.
 4. Tray widget → "Test restore" — proves the path from snapshot → decrypted file works
    without touching anything else.
-5. Contact tech support: **Sam**.
+5. Contact your tech support person (the one named in `DMN_TECH_NAME`).

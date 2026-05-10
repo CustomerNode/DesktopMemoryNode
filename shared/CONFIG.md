@@ -8,7 +8,7 @@ that setup is portable.
 
 | Variable              | Purpose                                  | Example                  | Sensitive |
 |-----------------------|------------------------------------------|--------------------------|-----------|
-| `MEMORYBOX_HOST`      | IP or hostname of the cloud memorybox    | `192.168.1.100`           | no        |
+| `MEMORYBOX_HOST`      | IP or hostname of the cloud memorybox    | `192.168.1.100`          | no        |
 | `MEMORYBOX_PORT`      | Port of the box's primary admin endpoint | `5000`                   | no        |
 | `MEMORYBOX_USER`      | Username for the node's NAS account      | `donc`                   | no        |
 | `MEMORYBOX_PASSWORD`  | Password for that account                | -                        | **yes**   |
@@ -23,7 +23,7 @@ the UI degrades gracefully if any are unset.
 |--------------------|------------------------------------------------------------|------------------------------------|
 | `DMN_DISPLAY_NAME` | Greeting name on this machine                              | `Mom`                           |
 | `DMN_TECH_NAME`    | Person to contact when something needs attention           | `Sam`                          |
-| `DMN_TECH_CONTACT` | Phone or email for tech support; appears in error toasts   | `sam@example.com`              |
+| `DMN_TECH_CONTACT` | Phone or email for tech support; appears in error toasts   | `sam@example.com`                  |
 
 ### Node naming
 

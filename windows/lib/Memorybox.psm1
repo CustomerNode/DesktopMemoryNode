@@ -23,7 +23,7 @@ $script:RequiredConnectionVars = @(
 $script:RequiredEncryptionVar = 'enc_pswd'
 
 # Display / personalization config (optional). See shared/CONFIG.md.
-$script:DisplayNameVar    = 'DMN_DISPLAY_NAME'    # e.g. "Mom" -- the user this machine belongs to
+$script:DisplayNameVar    = 'DMN_DISPLAY_NAME'    # e.g. "Mom" -- friendly display name for this machine's user
 $script:TechNameVar       = 'DMN_TECH_NAME'       # e.g. "Sam" -- person to contact when things go wrong
 $script:TechContactVar    = 'DMN_TECH_CONTACT'    # e.g. "sam@example.com" or "(555) 123-4567"
 
