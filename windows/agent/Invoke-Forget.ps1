@@ -132,7 +132,7 @@ try {
 } catch {
     $err = $_.Exception.Message
     Write-DmnLog "Forget FAILED: $err" -Kind 'forget' -Level ERROR
-    Send-MemoryboxToast -Title "Retention prune FAILED" -Body "Could not apply retention policy: $err  (Contact tech support: Sam)" -Level Error
+    Send-MemoryboxToast -Title "Retention prune FAILED" -Body "Could not apply retention policy: $err  $(Get-DmnSupportLine)" -Level Error
     exit 1
 } finally {
     if ($lock) { Unlock-NodeOperation -Handle $lock -Name 'forget' }

@@ -22,7 +22,10 @@ $script:RequiredConnectionVars = @(
 
 $script:RequiredEncryptionVar = 'enc_pswd'
 
-$script:TechSupportName = 'Sam'
+# Display / personalization config (optional). See shared/CONFIG.md.
+$script:DisplayNameVar    = 'DMN_DISPLAY_NAME'    # e.g. "Mom" -- the user this machine belongs to
+$script:TechNameVar       = 'DMN_TECH_NAME'       # e.g. "Sam" -- person to contact when things go wrong
+$script:TechContactVar    = 'DMN_TECH_CONTACT'    # e.g. "sam@example.com" or "(555) 123-4567"
 
 # --------------------------------------------------------------------------------------
 # State directory layout
@@ -104,6 +107,44 @@ function Get-MemoryboxCredential {
     [System.Management.Automation.PSCredential]::new($u, $secure)
 }
 
+function Get-DmnDisplayConfig {
+    <#
+    .SYNOPSIS
+    Returns optional personalization values used by the user-facing UI.
+    All fields are optional; UI must handle null/empty gracefully.
+
+    Fields:
+      UserName       - Display name to greet on this machine (e.g. "Mom").
+                       Empty -> UI uses generic phrasing.
+      TechName       - Person to contact for help (e.g. "Sam").
+                       Empty -> UI says "tech support".
+      TechContact    - Phone or email for tech support (e.g. "sam@example.com").
+                       Empty -> UI shows TechName only.
+    #>
+    [CmdletBinding()]
+    param()
+
+    [PSCustomObject]@{
+        UserName    = [Environment]::GetEnvironmentVariable($script:DisplayNameVar, 'User')
+        TechName    = [Environment]::GetEnvironmentVariable($script:TechNameVar,    'User')
+        TechContact = [Environment]::GetEnvironmentVariable($script:TechContactVar, 'User')
+    }
+}
+
+function Get-DmnSupportLine {
+    <#
+    .SYNOPSIS
+    Returns a one-line "need help?" string for use in toasts and forms.
+    #>
+    [CmdletBinding()]
+    param()
+
+    $d = Get-DmnDisplayConfig
+    $name = if ($d.TechName) { $d.TechName } else { 'tech support' }
+    if ($d.TechContact) { "Need help? Contact $name at $($d.TechContact)." }
+    else                { "Need help? Contact $name." }
+}
+
 function Get-MissingMemoryboxVars {
     <#
     .SYNOPSIS
@@ -134,8 +175,9 @@ function Assert-MemoryboxReady {
     $missing = Get-MissingMemoryboxVars
     if ($missing.Count -eq 0) { return }
 
-    $msg = "Missing required env var(s): $($missing -join ', '). Contact tech support: $script:TechSupportName."
-    try { Send-MemoryboxToast -Title "DesktopMemoryNode: configuration error" -Body $msg -Level Error } catch {}
+    $support = Get-DmnSupportLine
+    $msg = "Missing required env var(s): $($missing -join ', '). $support"
+    try { Send-MemoryboxToast -Title "Memory Box: configuration error" -Body $msg -Level Error } catch {}
     throw $msg
 }
 
@@ -652,6 +694,7 @@ function Get-NodeState {
         LastTestRestoreOk = $null
         SnapshotCount     = $null
         RepoSizeBytes     = $null
+        WelcomeShown      = $false
     }
     if (-not (Test-Path $path)) { return $default }
     try {
@@ -750,6 +793,7 @@ Export-ModuleMember -Function `
     Get-DmnStateRoot, Get-DmnTargetsPath, Get-DmnStatePath, Get-DmnLockPath, Get-DmnLogPath, `
     Get-MemoryboxConfig, Get-MemoryboxCredential, `
     Get-MissingMemoryboxVars, Assert-MemoryboxReady, `
+    Get-DmnDisplayConfig, Get-DmnSupportLine, `
     Get-EncryptionPassword, `
     Send-MemoryboxToast, `
     Test-MemoryboxNodeName, Get-MemoryboxNodes, Test-MemoryboxNodeNameAvailable, `

@@ -34,7 +34,7 @@ function Step($n, $total, $title) {
     Write-Host "=== Step $n/$total : $title ===" -ForegroundColor Cyan
 }
 
-$total = if ($SkipSchedule) { 5 } else { 6 }
+$total = if ($SkipSchedule) { 7 } else { 8 }
 $n = 0
 
 $n++; Step $n $total "Memorybox env vars (connection + node name)"
@@ -42,6 +42,9 @@ $n++; Step $n $total "Memorybox env vars (connection + node name)"
 
 $n++; Step $n $total "Restic install"
 & (Join-Path $here 'Install-Restic.ps1')
+
+$n++; Step $n $total "Toast notifications (BurntToast)"
+& (Join-Path $here 'Install-Notifications.ps1')
 
 $n++; Step $n $total "Encrypted restic repo on the NAS"
 $encSet = -not [string]::IsNullOrEmpty([Environment]::GetEnvironmentVariable('enc_pswd', 'User'))
@@ -69,9 +72,15 @@ if (-not $SkipSchedule) {
     & (Join-Path $here 'Install-Schedule.ps1')
 }
 
+$n++; Step $n $total "Tray app (login startup)"
+$trayInstaller = Join-Path (Split-Path -Parent $here) 'tray\Install-Tray.ps1'
+& $trayInstaller
+
 $n++; Step $n $total "Preflight checks"
 & (Join-Path $here 'Test-Setup.ps1')
 
 Write-Host ""
-Write-Host "Setup complete. The node will run its first scheduled backup at 02:00." -ForegroundColor Cyan
-Write-Host "To run a backup right now: windows\agent\Invoke-Backup.ps1 -Tag manual" -ForegroundColor Cyan
+Write-Host "Setup complete." -ForegroundColor Cyan
+Write-Host "  - Daily backup runs at 02:00 (next: see Status in tray)." -ForegroundColor Cyan
+Write-Host "  - Tray icon launches at next login (or run windows\tray\BackupTray.ps1 to start it now)." -ForegroundColor Cyan
+Write-Host "  - Run a backup right now: windows\agent\Invoke-Backup.ps1 -Tag manual" -ForegroundColor Cyan

@@ -161,7 +161,7 @@ try {
         LastTestRestoreAt = (Get-Date).ToString('o')
         LastTestRestoreOk = $false
     }
-    Send-MemoryboxToast -Title "Test restore FAILED" -Body "Test-restore did not complete: $err  (Contact tech support: Sam)" -Level Error
+    Send-MemoryboxToast -Title "Test restore FAILED" -Body "Test-restore did not complete: $err  $(Get-DmnSupportLine)" -Level Error
     exit 1
 } finally {
     if ($pwOverride) { Clear-ResticPasswordOverride }

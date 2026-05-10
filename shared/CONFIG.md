@@ -14,6 +14,17 @@ that setup is portable.
 | `MEMORYBOX_PASSWORD`  | Password for that account                | -                        | **yes**   |
 | `MEMORYBOX_NODE_NAME` | Unique name for this node (slug)         | `kitchen`                | no        |
 
+### Optional personalization (display only)
+
+These shape the user-facing UI (tray status messages, toast wording). All optional;
+the UI degrades gracefully if any are unset.
+
+| Variable           | Purpose                                                    | Example                            |
+|--------------------|------------------------------------------------------------|------------------------------------|
+| `DMN_DISPLAY_NAME` | Greeting name on this machine                              | `Mom`                           |
+| `DMN_TECH_NAME`    | Person to contact when something needs attention           | `Sam`                          |
+| `DMN_TECH_CONTACT` | Phone or email for tech support; appears in error toasts   | `sam@example.com`              |
+
 ### Node naming
 
 Every node that backs up to the memorybox must have a unique `MEMORYBOX_NODE_NAME`.

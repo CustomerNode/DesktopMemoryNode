@@ -112,7 +112,7 @@ try {
         LastBackupOk    = $false
         LastBackupError = $err
     }
-    Send-MemoryboxToast -Title "Backup FAILED" -Body "Backup did not complete: $err  (Contact tech support: Sam)" -Level Error
+    Send-MemoryboxToast -Title "Backup FAILED" -Body "Backup did not complete: $err  $(Get-DmnSupportLine)" -Level Error
     exit 1
 } finally {
     if ($lock) { Unlock-NodeOperation -Handle $lock -Name 'backup' }

@@ -73,7 +73,7 @@ try {
         LastVerifyAt = (Get-Date).ToString('o')
         LastVerifyOk = $false
     }
-    Send-MemoryboxToast -Title "Repo verify FAILED" -Body "Restic integrity check failed: $err  (Contact tech support: Sam)" -Level Error
+    Send-MemoryboxToast -Title "Repo verify FAILED" -Body "Restic integrity check failed: $err  $(Get-DmnSupportLine)" -Level Error
     exit 1
 } finally {
     if ($lock) { Unlock-NodeOperation -Handle $lock -Name 'verify' }
