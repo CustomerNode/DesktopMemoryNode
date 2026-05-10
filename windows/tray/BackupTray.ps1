@@ -905,7 +905,8 @@ function Show-PasswordPromptForm {
 
     $form.ShowDialog() | Out-Null
     $captured = $form.Tag
-    Write-DebugLine ("PasswordPrompt: returning length=" + (if ($captured) { $captured.Length } else { 0 }))
+    $capLen = if ($captured) { $captured.Length } else { 0 }
+    Write-DebugLine "PasswordPrompt: returning length=$capLen"
     return $captured
 }
 
