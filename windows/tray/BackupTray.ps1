@@ -69,55 +69,16 @@ $Theme = @{
 # --------------------------------------------------------------------------------------
 
 function New-MemoryBoxIcon {
-    param([System.Drawing.Color]$Fill = $Theme.Primary)
-
-    $size   = 32
-    $bmp    = New-Object System.Drawing.Bitmap $size, $size
-    $g      = [System.Drawing.Graphics]::FromImage($bmp)
-    $g.SmoothingMode     = [System.Drawing.Drawing2D.SmoothingMode]::AntiAlias
-    $g.InterpolationMode = [System.Drawing.Drawing2D.InterpolationMode]::HighQualityBicubic
-    $g.TextRenderingHint = [System.Drawing.Text.TextRenderingHint]::AntiAliasGridFit
-
-    # Rounded square background
-    $rect    = New-Object System.Drawing.Rectangle 1, 1, ($size - 2), ($size - 2)
-    $radius  = 6
-    $path    = New-Object System.Drawing.Drawing2D.GraphicsPath
-    $path.AddArc($rect.X, $rect.Y, $radius * 2, $radius * 2, 180, 90)
-    $path.AddArc($rect.Right - $radius * 2, $rect.Y, $radius * 2, $radius * 2, 270, 90)
-    $path.AddArc($rect.Right - $radius * 2, $rect.Bottom - $radius * 2, $radius * 2, $radius * 2, 0, 90)
-    $path.AddArc($rect.X, $rect.Bottom - $radius * 2, $radius * 2, $radius * 2, 90, 90)
-    $path.CloseFigure()
-
-    $bgBrush = New-Object System.Drawing.SolidBrush $Fill
-    $g.FillPath($bgBrush, $path)
-    $bgBrush.Dispose()
-
-    # Subtle inner highlight for depth
-    $highlightColor = [System.Drawing.Color]::FromArgb(40, 255, 255, 255)
-    $highlightBrush = New-Object System.Drawing.SolidBrush $highlightColor
-    $g.FillRectangle($highlightBrush, 1, 1, $size - 2, ($size - 2) / 3)
-    $highlightBrush.Dispose()
-    $path.Dispose()
-
-    # "MB" letters in white, semibold
-    $letterFont  = New-Object System.Drawing.Font 'Segoe UI', 13, ([System.Drawing.FontStyle]::Bold)
-    $letterBrush = New-Object System.Drawing.SolidBrush ([System.Drawing.Color]::White)
-    $sf = New-Object System.Drawing.StringFormat
-    $sf.Alignment     = [System.Drawing.StringAlignment]::Center
-    $sf.LineAlignment = [System.Drawing.StringAlignment]::Center
-    $textRect = New-Object System.Drawing.RectangleF 0, 1, $size, $size
-    $g.DrawString('MB', $letterFont, $letterBrush, $textRect, $sf)
-    $letterFont.Dispose()
-    $letterBrush.Dispose()
-    $sf.Dispose()
-
-    $g.Dispose()
-
-    # Convert bitmap to Icon via HICON
-    $hicon = $bmp.GetHicon()
-    $icon  = [System.Drawing.Icon]::FromHandle($hicon)
-    # Note: caller should keep the icon alive; bitmap can be disposed.
-    return $icon
+    # Single source of truth for the tray icon: the multi-size .ico file generated
+    # by Install-Tray.ps1 (rounded blue square with a centered white heart).
+    # If the .ico isn't present yet, fall back to a built-in icon so the tray still
+    # has a visual.
+    $iconPath = Join-Path $env:LOCALAPPDATA 'DesktopMemoryNode\Memory-Box.ico'
+    if (Test-Path $iconPath) {
+        try { return New-Object System.Drawing.Icon $iconPath }
+        catch { }
+    }
+    return [System.Drawing.SystemIcons]::Shield
 }
 
 $Font = @{
