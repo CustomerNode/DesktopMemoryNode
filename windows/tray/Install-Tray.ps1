@@ -51,19 +51,19 @@ function Save-MemoryBoxIcon {
 
     $rect   = New-Object System.Drawing.Rectangle 1, 1, ($size - 2), ($size - 2)
     $radius = 6
-    $path   = New-Object System.Drawing.Drawing2D.GraphicsPath
-    $path.AddArc($rect.X, $rect.Y, $radius * 2, $radius * 2, 180, 90)
-    $path.AddArc($rect.Right - $radius * 2, $rect.Y, $radius * 2, $radius * 2, 270, 90)
-    $path.AddArc($rect.Right - $radius * 2, $rect.Bottom - $radius * 2, $radius * 2, $radius * 2, 0, 90)
-    $path.AddArc($rect.X, $rect.Bottom - $radius * 2, $radius * 2, $radius * 2, 90, 90)
-    $path.CloseFigure()
+    $gpath  = New-Object System.Drawing.Drawing2D.GraphicsPath
+    $gpath.AddArc($rect.X, $rect.Y, $radius * 2, $radius * 2, 180, 90)
+    $gpath.AddArc($rect.Right - $radius * 2, $rect.Y, $radius * 2, $radius * 2, 270, 90)
+    $gpath.AddArc($rect.Right - $radius * 2, $rect.Bottom - $radius * 2, $radius * 2, $radius * 2, 0, 90)
+    $gpath.AddArc($rect.X, $rect.Bottom - $radius * 2, $radius * 2, $radius * 2, 90, 90)
+    $gpath.CloseFigure()
 
     $brush = New-Object System.Drawing.SolidBrush $primary
-    $g.FillPath($brush, $path); $brush.Dispose()
+    $g.FillPath($brush, $gpath); $brush.Dispose()
 
     $hl = New-Object System.Drawing.SolidBrush ([System.Drawing.Color]::FromArgb(40, 255, 255, 255))
     $g.FillRectangle($hl, 1, 1, $size - 2, ($size - 2) / 3); $hl.Dispose()
-    $path.Dispose()
+    $gpath.Dispose()
 
     $f  = New-Object System.Drawing.Font 'Segoe UI', 13, ([System.Drawing.FontStyle]::Bold)
     $wb = New-Object System.Drawing.SolidBrush ([System.Drawing.Color]::White)
