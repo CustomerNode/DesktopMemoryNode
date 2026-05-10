@@ -243,7 +243,7 @@ function New-SecondaryButton {
 }
 
 # --------------------------------------------------------------------------------------
-# Footer: "Made with care by Sam -- sam@..."
+# Footer: "Made with care by <DMN_TECH_NAME> -- <DMN_TECH_CONTACT>"
 # --------------------------------------------------------------------------------------
 
 function Add-Footer {
