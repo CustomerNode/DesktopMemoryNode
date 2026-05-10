@@ -1,0 +1,43 @@
+# Secrets / credentials
+*.env
+.env.*
+!.env.example
+*.key
+*.pem
+credentials.json
+secrets/
+
+# Local-only configs
+config.local.*
+*.local.yaml
+*.local.yml
+*.local.toml
+*.local.json
+
+# Backup payloads / scratch
+*.snapshot
+*.backup
+*.bak
+snapshots/
+restore-staging/
+tmp/
+
+# OS junk
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Editor / tooling
+.idea/
+.vscode/
+*.swp
+*~
+
+# Build / venv
+__pycache__/
+*.pyc
+.venv/
+venv/
+node_modules/
+dist/
+build/
