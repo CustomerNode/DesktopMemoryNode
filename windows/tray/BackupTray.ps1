@@ -644,33 +644,50 @@ function Show-SnapshotsForm {
             $rootNode.NodeFont = $Font.BodyBold
             $count = 0
             $totalSize = 0L
+
             foreach ($line in ($raw -split "`n")) {
                 $line = $line.Trim()
                 if (-not $line) { continue }
                 try { $obj = $line | ConvertFrom-Json } catch { continue }
+                if (-not $obj) { continue }
                 if ($obj.struct_type -ne 'node') { continue }
 
-                $parts = ($obj.path -split '/' | Where-Object { $_ })
+                $parts = @(($obj.path -split '/') | Where-Object { $_ })
+                if ($parts.Count -eq 0) { continue }
+
                 $cursor = $rootNode
                 for ($i = 0; $i -lt $parts.Count; $i++) {
-                    $part   = $parts[$i]
-                    $isLeaf = ($i -eq $parts.Count - 1)
+                    $part   = [string]$parts[$i]
+                    $isLeaf = ($i -eq ($parts.Count - 1))
+
+                    # Find an existing child with this name. Use a typed search to avoid
+                    # PowerShell trying to cast strings to TreeNode in some overload paths.
                     $existing = $null
-                    foreach ($child in $cursor.Nodes) {
-                        if ($child.Text -eq $part -or $child.Text.StartsWith("$part  ")) { $existing = $child; break }
+                    if ($cursor.Nodes.Count -gt 0) {
+                        for ($j = 0; $j -lt $cursor.Nodes.Count; $j++) {
+                            $child = $cursor.Nodes.Item($j)
+                            $childText = [string]$child.Text
+                            if ($childText -eq $part -or $childText.StartsWith($part + '  ')) {
+                                $existing = $child
+                                break
+                            }
+                        }
                     }
+
                     if ($existing) {
                         $cursor = $existing
                     } else {
                         $label = $part
                         if ($isLeaf -and $obj.type -eq 'file') {
-                            $sizeStr = if ($obj.size -ge 1MB) { '{0:N1} MB' -f ($obj.size / 1MB) }
-                                       elseif ($obj.size -ge 1KB) { '{0:N0} KB' -f ($obj.size / 1KB) }
-                                       else { "$($obj.size) B" }
+                            $sz = [long]$obj.size
+                            $sizeStr = if ($sz -ge 1MB) { '{0:N1} MB' -f ($sz / 1MB) }
+                                       elseif ($sz -ge 1KB) { '{0:N0} KB' -f ($sz / 1KB) }
+                                       else { "$sz B" }
                             $label = "$part  ($sizeStr)"
-                            $totalSize += $obj.size
+                            $totalSize += $sz
                         }
-                        $newNode = $cursor.Nodes.Add($label)
+                        # Use the (string) overload explicitly by passing only one string arg
+                        $newNode = $cursor.Nodes.Add([string]$label)
                         $cursor = $newNode
                     }
                 }
@@ -683,6 +700,8 @@ function Show-SnapshotsForm {
             $rightStatus.Text = "$count items, total $sizeFmt"
         } catch {
             $rightStatus.Text = "Couldn't load: " + $_.Exception.Message
+            Write-DebugLine "Snapshots tree-load EXCEPTION: $($_.Exception.Message)"
+            Write-DebugLine "  Stack: $($_.ScriptStackTrace)"
         } finally {
             $treeView.ResumeLayout()
         }
@@ -932,13 +951,12 @@ function Start-TestRestore {
         Write-DebugLine "Start-TestRestore: picked $($testFile.path) ($($testFile.size) bytes)"
 
         New-Item -ItemType Directory -Path $scratch -Force | Out-Null
-        $prevPref = $ErrorActionPreference
-        $ErrorActionPreference = 'Continue'
-        try {
-            Write-DebugLine "Start-TestRestore: running restore"
-            Invoke-Restic restore $newest.id --target $scratch --include $testFile.path 2>&1 | Out-Null
-            Write-DebugLine "Start-TestRestore: restore finished"
-        } finally { $ErrorActionPreference = $prevPref }
+        Write-DebugLine "Start-TestRestore: running restore"
+        # Restic on Windows emits a benign NativeCommandError when restoring under
+        # %TEMP% (can't set timestamps on the synthetic C:\Users parent dir).
+        # Swallow it -- we verify success by file existence + size below.
+        try { Invoke-Restic restore $newest.id --target $scratch --include $testFile.path 2>$null | Out-Null } catch {}
+        Write-DebugLine "Start-TestRestore: restore finished"
 
         $restored = Get-ChildItem -Path $scratch -Recurse -File -ErrorAction SilentlyContinue |
                     Where-Object { $_.Length -eq $testFile.size } | Select-Object -First 1
