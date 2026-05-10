@@ -15,13 +15,30 @@ Personalization (optional, set as User env vars -- see shared/CONFIG.md):
 Use windows/tray/Install-Tray.ps1 to launch at login.
 #>
 [CmdletBinding()]
-param()
+param(
+    # When set, just opens the Status form and exits; does not start the tray.
+    # Used by the desktop and Start Menu "Memory Box" shortcuts.
+    [switch]$ShowStatus,
+    # Same idea but opens the snapshots browser.
+    [switch]$ShowSnapshots
+)
 
 $ErrorActionPreference = 'Continue'
 
-Add-Type -AssemblyName System.Windows.Forms
-Add-Type -AssemblyName System.Drawing
-[System.Windows.Forms.Application]::EnableVisualStyles()
+# Debug log -- always written so we can diagnose silent failures.
+$script:DebugLog = Join-Path $env:TEMP 'dmn-tray-debug.log'
+function Write-DebugLine { param([string]$M) Add-Content -Path $script:DebugLog -Value ("{0:yyyy-MM-ddTHH:mm:ss.fff} [PID $PID] {1}" -f (Get-Date), $M) }
+Write-DebugLine "BackupTray.ps1 starting (ShowStatus=$($PSBoundParameters.ContainsKey('ShowStatus')) ShowSnapshots=$($PSBoundParameters.ContainsKey('ShowSnapshots')))"
+
+try {
+    Add-Type -AssemblyName System.Windows.Forms -ErrorAction Stop
+    Add-Type -AssemblyName System.Drawing       -ErrorAction Stop
+    [System.Windows.Forms.Application]::EnableVisualStyles()
+    Write-DebugLine "WinForms loaded"
+} catch {
+    Write-DebugLine "FAILED to load WinForms: $($_.Exception.Message)"
+    throw
+}
 
 $here     = Split-Path -Parent $MyInvocation.MyCommand.Path
 $libPath  = Join-Path $here '..\lib\Memorybox.psm1'
@@ -44,6 +61,63 @@ $Theme = @{
     Text        = [System.Drawing.Color]::FromArgb(26, 26, 26)
     TextMuted   = [System.Drawing.Color]::FromArgb(107, 107, 107)
     Divider     = [System.Drawing.Color]::FromArgb(229, 229, 229)
+}
+
+# --------------------------------------------------------------------------------------
+# Custom tray icon -- a rounded blue square with "MB" in white. Drawn at 32x32 because
+# Windows scales tray icons from this size. Returns a System.Drawing.Icon.
+# --------------------------------------------------------------------------------------
+
+function New-MemoryBoxIcon {
+    param([System.Drawing.Color]$Fill = $Theme.Primary)
+
+    $size   = 32
+    $bmp    = New-Object System.Drawing.Bitmap $size, $size
+    $g      = [System.Drawing.Graphics]::FromImage($bmp)
+    $g.SmoothingMode     = [System.Drawing.Drawing2D.SmoothingMode]::AntiAlias
+    $g.InterpolationMode = [System.Drawing.Drawing2D.InterpolationMode]::HighQualityBicubic
+    $g.TextRenderingHint = [System.Drawing.Text.TextRenderingHint]::AntiAliasGridFit
+
+    # Rounded square background
+    $rect    = New-Object System.Drawing.Rectangle 1, 1, ($size - 2), ($size - 2)
+    $radius  = 6
+    $path    = New-Object System.Drawing.Drawing2D.GraphicsPath
+    $path.AddArc($rect.X, $rect.Y, $radius * 2, $radius * 2, 180, 90)
+    $path.AddArc($rect.Right - $radius * 2, $rect.Y, $radius * 2, $radius * 2, 270, 90)
+    $path.AddArc($rect.Right - $radius * 2, $rect.Bottom - $radius * 2, $radius * 2, $radius * 2, 0, 90)
+    $path.AddArc($rect.X, $rect.Bottom - $radius * 2, $radius * 2, $radius * 2, 90, 90)
+    $path.CloseFigure()
+
+    $bgBrush = New-Object System.Drawing.SolidBrush $Fill
+    $g.FillPath($bgBrush, $path)
+    $bgBrush.Dispose()
+
+    # Subtle inner highlight for depth
+    $highlightColor = [System.Drawing.Color]::FromArgb(40, 255, 255, 255)
+    $highlightBrush = New-Object System.Drawing.SolidBrush $highlightColor
+    $g.FillRectangle($highlightBrush, 1, 1, $size - 2, ($size - 2) / 3)
+    $highlightBrush.Dispose()
+    $path.Dispose()
+
+    # "MB" letters in white, semibold
+    $letterFont  = New-Object System.Drawing.Font 'Segoe UI', 13, ([System.Drawing.FontStyle]::Bold)
+    $letterBrush = New-Object System.Drawing.SolidBrush ([System.Drawing.Color]::White)
+    $sf = New-Object System.Drawing.StringFormat
+    $sf.Alignment     = [System.Drawing.StringAlignment]::Center
+    $sf.LineAlignment = [System.Drawing.StringAlignment]::Center
+    $textRect = New-Object System.Drawing.RectangleF 0, 1, $size, $size
+    $g.DrawString('MB', $letterFont, $letterBrush, $textRect, $sf)
+    $letterFont.Dispose()
+    $letterBrush.Dispose()
+    $sf.Dispose()
+
+    $g.Dispose()
+
+    # Convert bitmap to Icon via HICON
+    $hicon = $bmp.GetHicon()
+    $icon  = [System.Drawing.Icon]::FromHandle($hicon)
+    # Note: caller should keep the icon alive; bitmap can be disposed.
+    return $icon
 }
 
 $Font = @{
@@ -246,22 +320,22 @@ function New-MemoryForm {
     $form.StartPosition = 'CenterScreen'
     $form.BackColor     = $Theme.Bg
     $form.Font          = $Font.Body
-    $form.Icon          = [System.Drawing.SystemIcons]::Shield
+    $form.Icon          = New-MemoryBoxIcon
+    $form.ShowInTaskbar = $true
+    $form.WindowState   = 'Normal'
     if ($FixedSize) {
         $form.FormBorderStyle = 'FixedDialog'
         $form.MaximizeBox = $false
         $form.MinimizeBox = $false
     }
 
-    # Subtle fade-in
-    $form.Opacity = 0
-    $timer = New-Object System.Windows.Forms.Timer
-    $timer.Interval = 16
-    $timer.Add_Tick({
-        if ($form.Opacity -lt 1) { $form.Opacity = [Math]::Min(1, $form.Opacity + 0.10) }
-        else { $timer.Stop(); $timer.Dispose() }
+    $form.Add_Shown({
+        $form.TopMost = $true
+        $form.Activate()
+        $form.BringToFront()
+        $form.Focus() | Out-Null
+        $form.TopMost = $false
     }.GetNewClosure())
-    $form.Add_Shown({ $timer.Start() }.GetNewClosure())
 
     $form
 }
@@ -876,20 +950,64 @@ $advanced = New-Object System.Windows.Forms.ToolStripMenuItem 'Advanced'
     [System.Windows.Forms.Application]::Exit()
 })
 
+# If invoked with -ShowStatus / -ShowSnapshots, just open that form and exit (no tray).
+if ($ShowStatus) {
+    Write-DebugLine "Entering -ShowStatus path"
+    try {
+        Show-StatusForm
+        Write-DebugLine "Show-StatusForm returned cleanly"
+    } catch {
+        Write-DebugLine "Show-StatusForm THREW: $($_.Exception.Message)"
+        Write-DebugLine "  Stack: $($_.ScriptStackTrace)"
+        [System.Windows.Forms.MessageBox]::Show(
+            "Couldn't open the dashboard.`r`n`r`nError: $($_.Exception.Message)`r`n`r`nDebug log: $($script:DebugLog)",
+            'Memory Box',
+            'OK',
+            'Error'
+        ) | Out-Null
+    }
+    return
+}
+if ($ShowSnapshots) {
+    Show-SnapshotsForm
+    return
+}
+
+# Single-instance guard: prevent multiple tray icons from accumulating.
+# Use a session-scoped mutex (no Global\ prefix) so each interactive session
+# gets one tray, not one per-machine.
+$script:Mutex = New-Object System.Threading.Mutex $false, 'DesktopMemoryNode-Tray'
+$haveMutex = $false
+try { $haveMutex = $script:Mutex.WaitOne(0, $false) } catch { $haveMutex = $false }
+if (-not $haveMutex) {
+    # Another tray is already running; just exit silently.
+    return
+}
+
 # Tray icon
 $script:NotifyIcon = New-Object System.Windows.Forms.NotifyIcon
-$script:NotifyIcon.Icon              = [System.Drawing.SystemIcons]::Shield
+$script:TrayIcon   = New-MemoryBoxIcon
+$script:NotifyIcon.Icon              = $script:TrayIcon
 $disp = Get-DmnDisplayConfig
 $tipName = if ($disp.UserName) { "$($disp.UserName)'s Memory Box" } else { 'Memory Box' }
 $script:NotifyIcon.Text              = $tipName
 $script:NotifyIcon.ContextMenuStrip  = $menu
 $script:NotifyIcon.Visible           = $true
 
-# Left-click opens Status
-$script:NotifyIcon.add_MouseClick({
+# Left-click opens Status. Wire up multiple events because NotifyIcon click
+# behavior is inconsistent on different Windows builds:
+#   - add_Click fires on left single-click on most builds
+#   - add_MouseUp + button check is the most reliable cross-build path
+#   - add_DoubleClick is a backup for users who instinctively double-click tray icons
+$leftClickHandler = {
     param($sender, $e)
-    if ($e.Button -eq [System.Windows.Forms.MouseButtons]::Left) { Show-StatusForm }
-})
+    $btn = $e.Button
+    if ($btn -eq [System.Windows.Forms.MouseButtons]::Left) {
+        Show-StatusForm
+    }
+}
+$script:NotifyIcon.add_MouseUp($leftClickHandler)
+$script:NotifyIcon.add_DoubleClick({ Show-StatusForm })
 
 # First-launch welcome
 $state = Get-NodeState
