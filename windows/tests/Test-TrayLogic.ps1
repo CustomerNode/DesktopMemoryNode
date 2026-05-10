@@ -168,7 +168,22 @@ Check "Install-Tray.ps1 parses cleanly" {
     if ($errors.Count -gt 0) { throw "$($errors.Count) parse error(s); first: $($errors[0].Message)" }
 }
 
-# 8. Live UI smoke test -- launch via the VBS launcher exactly as the desktop
+# 8. Form-construction smoke -- runs each form-builder function and verifies
+# none throw. Catches case-collision bugs (param vs local variable names) and
+# other property-access errors that would crash the live tray.
+Check "All form-builder functions construct without throwing" {
+    $trayPath = Join-Path (Split-Path -Parent $here) 'tray\BackupTray.ps1'
+    $exitCode = 0
+    & {
+        powershell -ExecutionPolicy Bypass -File $trayPath -SmokeTest 2>&1 | Out-Null
+        $script:smokeExit = $LASTEXITCODE
+    }
+    if ($script:smokeExit -ne 0) {
+        throw "$($script:smokeExit) form builder(s) failed; run BackupTray.ps1 -SmokeTest to see which"
+    }
+}
+
+# 9. Live UI smoke test -- launch via the VBS launcher exactly as the desktop
 # shortcut would, and verify a Memory Box window appears (not "PowerShell").
 Check "VBS launcher (-ShowStatus) opens a Memory Box window, not a PowerShell one" {
     $vbs = Join-Path $env:LOCALAPPDATA 'DesktopMemoryNode\launch-status.vbs'

@@ -20,7 +20,10 @@ param(
     # Used by the desktop and Start Menu "Memory Box" shortcuts.
     [switch]$ShowStatus,
     # Same idea but opens the snapshots browser.
-    [switch]$ShowSnapshots
+    [switch]$ShowSnapshots,
+    # Test hook -- builds each form builder and immediately closes it so we can
+    # verify there are no construction-time exceptions. Used by Test-TrayLogic.ps1.
+    [switch]$SmokeTest
 )
 
 $ErrorActionPreference = 'Continue'
@@ -917,22 +920,24 @@ function Show-TestRestoreResult {
 
     $accent = if ($Kind -eq 'Success') { $Theme.Success } else { $Theme.Danger }
 
-    $hero = New-Object System.Windows.Forms.Label
-    $hero.Text      = $Title
-    $hero.Font      = $Font.Hero
-    $hero.ForeColor = $accent
-    $hero.AutoSize  = $true
-    $hero.Location  = New-Object System.Drawing.Point(25, 22)
-    $form.Controls.Add($hero)
+    $heroLbl = New-Object System.Windows.Forms.Label
+    $heroLbl.Text      = $Title
+    $heroLbl.Font      = $Font.Hero
+    $heroLbl.ForeColor = $accent
+    $heroLbl.AutoSize  = $true
+    $heroLbl.Location  = New-Object System.Drawing.Point(25, 22)
+    $form.Controls.Add($heroLbl)
 
-    $body = New-Object System.Windows.Forms.Label
-    $body.Text      = $Body
-    $body.Font      = $Font.Body
-    $body.ForeColor = $Theme.Text
-    $body.AutoSize  = $false
-    $body.Size      = New-Object System.Drawing.Size(465, 100)
-    $body.Location  = New-Object System.Drawing.Point(25, 75)
-    $form.Controls.Add($body)
+    # Use $bodyLbl (not $body) to avoid case-collision with the [string]$Body parameter
+    # -- PowerShell would coerce the new Label back to a string and break .Text access.
+    $bodyLbl = New-Object System.Windows.Forms.Label
+    $bodyLbl.Text      = $Body
+    $bodyLbl.Font      = $Font.Body
+    $bodyLbl.ForeColor = $Theme.Text
+    $bodyLbl.AutoSize  = $false
+    $bodyLbl.Size      = New-Object System.Drawing.Size(465, 100)
+    $bodyLbl.Location  = New-Object System.Drawing.Point(25, 75)
+    $form.Controls.Add($bodyLbl)
 
     $okBtn = New-PrimaryButton -Text "OK" -Width 110
     $okBtn.Location = New-Object System.Drawing.Point(380, 200)
@@ -1087,10 +1092,13 @@ function Start-TestRestore {
         Close-WorkingDialog $progress
         Show-TestRestoreResult -Title "Test passed" -Body "I successfully decrypted and recovered a $size-byte file from your Memory Box. Your password is correct and the backup is healthy." -Kind Success
     } catch {
-        Write-DebugLine "Start-TestRestore: EXCEPTION $($_.Exception.Message)"
-        Write-DebugLine "  Stack: $($_.ScriptStackTrace)"
+        $exMsg   = $_.Exception.Message
+        $exType  = $_.Exception.GetType().FullName
+        $stack   = $_.ScriptStackTrace
+        Write-DebugLine "Start-TestRestore: EXCEPTION ($exType) $exMsg"
+        Write-DebugLine "  Stack: $stack"
         Close-WorkingDialog $progress
-        Show-TestRestoreResult -Title "Test didn't work" -Body "Something went wrong: $($_.Exception.Message).  $(Get-DmnSupportLine)" -Kind Error
+        Show-TestRestoreResult -Title "Test didn't work" -Body "Something went wrong: $exMsg`n`nType: $exType`n`nDebug log: $($script:DebugLog)`n`n$(Get-DmnSupportLine)" -Kind Error
     } finally {
         Clear-ResticPasswordOverride
         $password = $null
@@ -1235,6 +1243,46 @@ $advanced = New-Object System.Windows.Forms.ToolStripMenuItem 'Advanced'
     if ($script:NotifyIcon) { $script:NotifyIcon.Visible = $false; $script:NotifyIcon.Dispose() }
     [System.Windows.Forms.Application]::Exit()
 })
+
+# Smoke test mode: build each form, auto-close after 800ms, exit with the count of failures.
+if ($SmokeTest) {
+    Write-DebugLine "SmokeTest: starting"
+    $closer = New-Object System.Windows.Forms.Timer
+    $closer.Interval = 800
+    $closer.Add_Tick({
+        [System.Windows.Forms.Application]::OpenForms | ForEach-Object {
+            try { $_.Close() } catch {}
+        }
+    }.GetNewClosure())
+    $closer.Start()
+
+    $failed = 0
+    $tests = @(
+        @{ Name = 'Show-TestRestoreResult Success'; Run = { Show-TestRestoreResult -Title 'OK' -Body 'works' -Kind Success } },
+        @{ Name = 'Show-TestRestoreResult Error';   Run = { Show-TestRestoreResult -Title 'NO' -Body 'fails' -Kind Error   } },
+        @{ Name = 'Confirm-ManualBackup';           Run = { [void](Confirm-ManualBackup) } },
+        @{ Name = 'Confirm-TestRestore';            Run = { [void](Confirm-TestRestore) } },
+        @{ Name = 'Show-PasswordPromptForm';        Run = { [void](Show-PasswordPromptForm -Reason 'test') } },
+        @{ Name = 'Show-StatusForm';                Run = { Show-StatusForm } },
+        @{ Name = 'Show-SnapshotsForm';             Run = { Show-SnapshotsForm } },
+        @{ Name = 'Show-EditConfigForm';            Run = { Show-SettingsForm } },
+        @{ Name = 'Show-WelcomeForm';               Run = { Show-WelcomeForm } }
+    )
+    foreach ($t in $tests) {
+        Write-Host -NoNewline "  $($t.Name): "
+        try {
+            & $t.Run
+            Write-Host "OK" -ForegroundColor Green
+        } catch {
+            Write-Host "FAIL: $($_.Exception.Message)" -ForegroundColor Red
+            $failed++
+        }
+    }
+    $closer.Stop(); $closer.Dispose()
+    Write-Host ""
+    Write-Host "SmokeTest: $failed failure(s)"
+    exit $failed
+}
 
 # If invoked with -ShowStatus / -ShowSnapshots, just open that form and exit (no tray).
 if ($ShowStatus) {
