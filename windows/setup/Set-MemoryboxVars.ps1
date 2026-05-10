@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
 Sets the MEMORYBOX_* user environment variables that point at the cloud memorybox
 and identify this node.
@@ -70,7 +70,7 @@ function Read-NodeName {
     while ($true) {
         $value = Read-Host $Prompt
         if ([string]::IsNullOrWhiteSpace($value)) {
-            Write-Host "    (empty input — skipping)" -ForegroundColor Yellow
+            Write-Host "    (empty input -- skipping)" -ForegroundColor Yellow
             return $null
         }
         $value = $value.Trim().ToLower()
@@ -92,7 +92,7 @@ function Read-NodeName {
                 }
             } catch {
                 Write-Host "    (couldn't check for conflicts: $($_.Exception.Message))" -ForegroundColor DarkGray
-                Write-Host "    Proceeding anyway — verify manually that '$value' is unique." -ForegroundColor DarkGray
+                Write-Host "    Proceeding anyway -- verify manually that '$value' is unique." -ForegroundColor DarkGray
             }
         }
         return $value

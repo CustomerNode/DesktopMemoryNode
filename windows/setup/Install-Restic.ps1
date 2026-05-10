@@ -1,6 +1,6 @@
-<#
+﻿<#
 .SYNOPSIS
-Installs restic on Windows via winget. Idempotent — no-op if already installed.
+Installs restic on Windows via winget. Idempotent -- no-op if already installed.
 
 .DESCRIPTION
 Restic is the encrypted, deduplicating backup engine used by DesktopMemoryNode.

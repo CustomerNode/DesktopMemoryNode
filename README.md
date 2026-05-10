@@ -70,7 +70,7 @@ The project builds in phases. Each phase ends with something useful on its own.
 - Initialize encrypted restic repo on the NAS
 - Configurable backup targets (paths in / paths excluded), set during setup
 - Scheduled daily backup via Windows Task Scheduler
-- Retention policy: keep 7 daily, 4 weekly, 12 monthly snapshots
+- Retention policy: always keep **4 distinct snapshots** per node — newest scheduled (today), newest scheduled ≥7 days older (week), newest scheduled ≥30 days older than that (month), newest manual (widget-triggered). Overlap doesn't collapse the count: if today's snapshot also satisfies the "weekly" bucket, the previous weekly is still retained.
 - Per-run logging with rotation
 - Lock file to prevent concurrent runs
 - One restic repo per node
