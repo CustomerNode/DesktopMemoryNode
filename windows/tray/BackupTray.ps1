@@ -790,11 +790,161 @@ don't have it written down, ask $tech.
     return ($form.ShowDialog() -eq 'OK')
 }
 
+function Show-PasswordPromptForm {
+    <#
+    .SYNOPSIS
+    Modal WinForms password prompt. Returns the typed password as a string, or $null if cancelled.
+    #>
+    param([string]$Reason = "Type the encryption password:")
+
+    $form = New-MemoryForm -Title "Memory Box -- type your password" -Width 480 -Height 260 -FixedSize
+
+    $hero = New-Object System.Windows.Forms.Label
+    $hero.Text      = "Type your password"
+    $hero.Font      = $Font.Hero
+    $hero.ForeColor = $Theme.Primary
+    $hero.AutoSize  = $true
+    $hero.Location  = New-Object System.Drawing.Point(25, 22)
+    $form.Controls.Add($hero)
+
+    $sub = New-Object System.Windows.Forms.Label
+    $sub.Text      = $Reason
+    $sub.Font      = $Font.Body
+    $sub.ForeColor = $Theme.Text
+    $sub.AutoSize  = $true
+    $sub.Location  = New-Object System.Drawing.Point(25, 75)
+    $form.Controls.Add($sub)
+
+    $tb = New-Object System.Windows.Forms.TextBox
+    $tb.Location = New-Object System.Drawing.Point(25, 110)
+    $tb.Size     = New-Object System.Drawing.Size(420, 28)
+    $tb.Font     = $Font.Body
+    $tb.UseSystemPasswordChar = $true
+    $form.Controls.Add($tb)
+
+    $script:typedPassword = $null
+
+    $okBtn = New-PrimaryButton -Text "OK" -Width 110
+    $okBtn.Location = New-Object System.Drawing.Point(225, 175)
+    $okBtn.Add_Click({
+        $script:typedPassword = $tb.Text
+        $form.Close()
+    }.GetNewClosure())
+    $form.AcceptButton = $okBtn
+    $form.Controls.Add($okBtn)
+
+    $cancelBtn = New-SecondaryButton -Text "Cancel" -Width 110
+    $cancelBtn.Location = New-Object System.Drawing.Point(345, 175)
+    $cancelBtn.Add_Click({ $script:typedPassword = $null; $form.Close() }.GetNewClosure())
+    $form.CancelButton = $cancelBtn
+    $form.Controls.Add($cancelBtn)
+
+    $form.Add_Shown({ $tb.Focus() | Out-Null }.GetNewClosure())
+
+    $form.ShowDialog() | Out-Null
+    return $script:typedPassword
+}
+
+function Show-TestRestoreResult {
+    param([string]$Title, [string]$Body, [ValidateSet('Success','Error')][string]$Kind = 'Success')
+
+    $form = New-MemoryForm -Title "Memory Box" -Width 520 -Height 280 -FixedSize
+
+    $accent = if ($Kind -eq 'Success') { $Theme.Success } else { $Theme.Danger }
+
+    $hero = New-Object System.Windows.Forms.Label
+    $hero.Text      = $Title
+    $hero.Font      = $Font.Hero
+    $hero.ForeColor = $accent
+    $hero.AutoSize  = $true
+    $hero.Location  = New-Object System.Drawing.Point(25, 22)
+    $form.Controls.Add($hero)
+
+    $body = New-Object System.Windows.Forms.Label
+    $body.Text      = $Body
+    $body.Font      = $Font.Body
+    $body.ForeColor = $Theme.Text
+    $body.AutoSize  = $false
+    $body.Size      = New-Object System.Drawing.Size(465, 100)
+    $body.Location  = New-Object System.Drawing.Point(25, 75)
+    $form.Controls.Add($body)
+
+    $okBtn = New-PrimaryButton -Text "OK" -Width 110
+    $okBtn.Location = New-Object System.Drawing.Point(380, 200)
+    $okBtn.Add_Click({ $form.Close() }.GetNewClosure())
+    $form.AcceptButton = $okBtn
+    $form.Controls.Add($okBtn)
+
+    $form.ShowDialog() | Out-Null
+}
+
 function Start-TestRestore {
     if (-not (Confirm-TestRestore)) { return }
-    $script = Join-Path $repoRoot 'windows\agent\Invoke-TestRestore.ps1'
-    Start-Process -FilePath 'powershell.exe' `
-        -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-File',"`"$script`"",'-PromptPassword')
+
+    $password = Show-PasswordPromptForm -Reason "Type the password to verify the backup is healthy."
+    if (-not $password) { return }
+
+    # Set the override and run the test-restore logic inline. We use Invoke-Restic
+    # directly so all output is captured in the tray process and we can show a
+    # result dialog -- no PowerShell window ever appears.
+    Set-ResticPasswordOverride -Password $password
+    $scratch = Join-Path $env:TEMP "dmn-tray-test-$([guid]::NewGuid().Guid.Substring(0,8))"
+    try {
+        Connect-MemoryboxSmb
+
+        # Newest snapshot
+        $rawSnaps = Invoke-Restic snapshots --json 2>$null
+        $snaps    = if ($rawSnaps) { @(($rawSnaps | Out-String).Trim() | ConvertFrom-Json) } else { @() }
+        if ($snaps.Count -eq 0) {
+            Show-TestRestoreResult -Title "No snapshots yet" -Body "There aren't any backups in your Memory Box to test. Save your files at least once first." -Kind Error
+            return
+        }
+        $newest = $snaps | Sort-Object @{Expression={[datetime]$_.time}} -Descending | Select-Object -First 1
+
+        # Small test file
+        $rawLs = Invoke-Restic ls --json $newest.id 2>$null
+        $files = @()
+        foreach ($line in ($rawLs -split "`n")) {
+            $line = $line.Trim(); if (-not $line) { continue }
+            try { $obj = $line | ConvertFrom-Json } catch { continue }
+            if ($obj.struct_type -eq 'node' -and $obj.type -eq 'file' -and $obj.size -gt 0 -and $obj.size -le 1MB) {
+                $files += $obj
+            }
+        }
+        if ($files.Count -eq 0) {
+            Show-TestRestoreResult -Title "No file to test with" -Body "Couldn't find a small file to test with. Try saving more files first." -Kind Error
+            return
+        }
+        $testFile = $files | Get-Random
+        New-Item -ItemType Directory -Path $scratch -Force | Out-Null
+        $prevPref = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
+        try {
+            Invoke-Restic restore $newest.id --target $scratch --include $testFile.path 2>&1 | Out-Null
+        } finally { $ErrorActionPreference = $prevPref }
+
+        $restored = Get-ChildItem -Path $scratch -Recurse -File -ErrorAction SilentlyContinue |
+                    Where-Object { $_.Length -eq $testFile.size } | Select-Object -First 1
+        if (-not $restored) {
+            # Most likely cause: wrong password
+            Show-TestRestoreResult -Title "Test didn't work" -Body "Couldn't decrypt and recover a file from the backup box. The password might be wrong, or the backup is unreachable.  $(Get-DmnSupportLine)" -Kind Error
+            return
+        }
+
+        # Success
+        Set-NodeState -Updates @{
+            LastTestRestoreAt = (Get-Date).ToString('o')
+            LastTestRestoreOk = $true
+        }
+        $size = $restored.Length
+        $msg  = "I successfully decrypted and recovered a $size-byte file from your Memory Box. Your password is correct and the backup is healthy."
+        Show-TestRestoreResult -Title "Test passed" -Body $msg -Kind Success
+    } catch {
+        Show-TestRestoreResult -Title "Test didn't work" -Body "Something went wrong: $($_.Exception.Message).  $(Get-DmnSupportLine)" -Kind Error
+    } finally {
+        Clear-ResticPasswordOverride
+        $password = $null
+        if (Test-Path $scratch) { Remove-Item -Recurse -Force $scratch -ErrorAction SilentlyContinue }
+    }
 }
 
 # =====================================================================================

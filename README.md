@@ -1,106 +1,128 @@
 # DesktopMemoryNode
 
-Cross-platform desktop backup node: encrypted file-level backups on Windows,
-full-system backup & restore on Linux Mint, syncing to a cloud **memorybox**
-(Synology NAS).
+> Encrypted, scheduled, self-verifying desktop backups to a home NAS. Built as a
+> Mother's Day gift; designed for non-technical users with all the dev tools
+> tucked behind an "Advanced" submenu.
 
-> **Status:** Phase 0 complete (scaffolding + reusable Windows setup).
-> Backup engine, scheduling, widget, and notifications are upcoming.
+**Status:** All five phases complete. Tested live against a Synology NAS.
 
-## Scope
+---
 
-| Platform     | Backup type                    | Restore                          |
-|--------------|--------------------------------|----------------------------------|
-| Windows      | File / directory backups       | File-level restore               |
-| Linux Mint   | Full system image              | Full system restore (bare-metal) |
+## What it does
 
-Backups are **client-side encrypted** (the NAS only sees ciphertext), with
-**point-in-time snapshots** (yesterday, last week, last month) and
-**automatic retention** so old snapshots are pruned.
+- **Encrypts your files locally** before they ever leave the machine. The NAS
+  only ever sees ciphertext. Lose the password and even the NAS owner can't
+  recover the data.
+- **Saves automatically** every day at 02:00, with a **system tray app** for
+  on-demand snapshots, status, and one-click restore-tests.
+- **Always keeps exactly 4 distinct snapshots** per machine: today, ~1 week ago,
+  ~1 month ago, and the most recent on-demand "save now". Overlap doesn't
+  collapse the count.
+- **Verifies itself.** Weekly integrity check (`restic check`). Monthly
+  test-restore round-trip (decrypt one file, hash-check). Both feed into a
+  status dashboard so you can tell at a glance whether things are healthy.
+- **Toasts on failure** so you (or whoever's tech support) hears about it.
+  Sticky notifications via BurntToast -- they stay on screen until dismissed.
+- **Same conventions on Linux Mint** as on Windows -- one repo, two platform
+  agents, identical retention policy.
+
+## Quick install
+
+| Platform | One-liner |
+|---|---|
+| **Windows** | `git clone https://github.com/CustomerNode/DesktopMemoryNode && cd DesktopMemoryNode\windows\setup && Set-ExecutionPolicy -Scope CurrentUser RemoteSigned && .\Setup-Node.ps1` |
+| **Linux Mint** | `git clone https://github.com/CustomerNode/DesktopMemoryNode ~/dmn && cd ~/dmn/linux-mint/setup && chmod +x ../**/*.sh && ./setup-node.sh` |
+
+The orchestrator handles everything: env vars, restic install, encrypted repo
+init on the NAS, scheduled tasks/timers, tray app, preflight checklist.
+
+See [`windows/README.md`](windows/README.md) and
+[`linux-mint/README.md`](linux-mint/README.md) for detailed walkthroughs.
+
+## Architecture
+
+See [`docs/architecture.md`](docs/architecture.md) for the full picture.
+Short version:
+
+```
+   +-----------------+         encrypted snapshot
+   |   Your machine  |  ----------------------------->   +---------------+
+   |  (Win or Linux) |                                   |  Memory Box   |
+   |                 |                                   |  (Synology)   |
+   |  restic agent   |  <-----------------------------   |               |
+   |  + tray widget  |       restore (only to a          |  dmn-<node>/  |
+   +-----------------+        scratch dir, never                          |
+            |                  in-place over /)                           |
+            |                                            +---------------+
+            |
+       state.json
+       targets.json
+       enc_pswd (env var)
+```
+
+- **Each machine has a unique node name** (e.g. `kitchen`, `office-laptop`).
+  Storage is partitioned at `\\<host>\home\dmn-<nodename>\` so multiple
+  machines coexist on the same NAS account without colliding.
+- **Encryption key is the `enc_pswd` env var** (User scope). Never stored in
+  the repo. Lose it and the backups are unrecoverable -- by design. See
+  [`docs/security.md`](docs/security.md) for the full threat model.
+- **Restic** does the heavy lifting (encryption, dedup, snapshots). All the
+  scripts here are wrappers that bake in the conventions: per-node repos,
+  4-snapshot retention, scheduling, status, toasts, verify, test-restore.
 
 ## Repository layout
 
 ```
 DesktopMemoryNode/
-├── windows/        # Windows file-system backup agent
-│   ├── lib/        # Reusable PowerShell module (Memorybox.psm1)
-│   ├── setup/      # Install / config scripts
-│   ├── agent/      # (Phase 1) Backup runner
-│   ├── tray/       # (Phase 3) System tray widget
-│   └── restore/    # (Phase 2) File-level restore
-├── linux-mint/     # (Phase 5) Linux Mint full-system backup & restore
-├── shared/         # Cross-platform config conventions
-└── docs/           # Architecture notes, runbooks
+├── README.md                    # This file
+├── shared/
+│   └── CONFIG.md                # Env-var convention used by all platform agents
+├── docs/
+│   ├── architecture.md          # Data flow, threat model, why decisions were made
+│   └── runbooks/
+│       ├── restore-windows.md   # File-level + bare-metal recovery (Windows)
+│       ├── restore-linux.md     # File-level + bare-metal recovery (Linux Mint)
+│       └── second-node.md       # Onboarding a new machine in <5 minutes
+├── windows/
+│   ├── lib/Memorybox.psm1       # Reusable PowerShell module
+│   ├── setup/                   # One-time setup scripts (idempotent)
+│   ├── agent/                   # Backup, forget, verify, test-restore runners
+│   ├── restore/                 # File-level restore CLI
+│   ├── tray/                    # System tray widget + installer
+│   └── tests/                   # Pester v5 unit tests
+└── linux-mint/
+    ├── lib/memorybox.sh         # Shared bash helpers
+    ├── setup/                   # Setup orchestrator + per-step scripts
+    ├── agent/                   # Backup, forget, verify, test-restore
+    └── restore/                 # File-level restore CLI
 ```
 
-## Quick start (Windows)
+## Personalization
 
-See [`windows/README.md`](windows/README.md) for the detailed setup walkthrough.
-Short version:
+Three optional User-scope env vars control the user-facing wording:
 
-```powershell
-git clone https://github.com/CustomerNode/DesktopMemoryNode.git
-cd DesktopMemoryNode\windows\setup
-# One-time per user: allow PowerShell scripts to run
-Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned
-.\Setup-Node.ps1
-```
+| Variable | Example | Purpose |
+|---|---|---|
+| `DMN_DISPLAY_NAME` | `Mom` | Greeting on this machine |
+| `DMN_TECH_NAME` | `Sam` | Person to contact when something needs attention |
+| `DMN_TECH_CONTACT` | `sam@example.com` | Phone or email; appears in error toasts and form footers |
 
-## Concepts
+Empty values degrade gracefully (generic "Memory Box" wording, "tech support"
+in place of a name).
 
-- **Memorybox** — the cloud destination that stores backup snapshots. Currently
-  a Synology NAS reachable on the LAN. Connection details live in
-  `MEMORYBOX_*` user environment variables (see [`shared/CONFIG.md`](shared/CONFIG.md)).
-- **Node** — a single desktop participating in backups. Each node owns its
-  own restic repo, encryption key, schedule, and credentials.
-- **Snapshot** — a point-in-time encrypted backup uploaded to the memorybox.
-  Created by [restic](https://restic.net).
+## Roadmap recap
 
-## Roadmap
-
-The project builds in phases. Each phase ends with something useful on its own.
-
-### Phase 0 — Scaffolding ✅
-- Repo layout, READMEs, `.gitignore`
-- Reusable PowerShell module (`windows/lib/Memorybox.psm1`)
-- Setup scripts: env vars, install restic, preflight diagnostic, orchestrator
-- Shared config conventions (`shared/CONFIG.md`)
-
-### Phase 1 — Backup engine end-to-end
-- Initialize encrypted restic repo on the NAS
-- Configurable backup targets (paths in / paths excluded), set during setup
-- Scheduled daily backup via Windows Task Scheduler
-- Retention policy: always keep **4 distinct snapshots** per node — newest scheduled (today), newest scheduled ≥7 days older (week), newest scheduled ≥30 days older than that (month), newest manual (widget-triggered). Overlap doesn't collapse the count: if today's snapshot also satisfies the "weekly" bucket, the previous weekly is still retained.
-- Per-run logging with rotation
-- Lock file to prevent concurrent runs
-- One restic repo per node
-
-### Phase 2 — Verification & restore
-- Weekly `restic check` (integrity verification)
-- Monthly automated test-restore (round-trip check that decryption works)
-- File-level restore CLI
-- Restore runbook (`docs/runbooks/restore-windows.md`) — what to do if the desktop dies
-
-### Phase 3 — System tray widget
-PowerShell + WinForms tray icon. Right-click menu:
-- **Status** — last backup, next scheduled, repo size, last verify, last test-restore
-- **Snapshot now** — on-demand backup
-- **Test restore** — pick a snapshot, enter encryption password, restore one file to scratch, verify decryption + integrity, report
-- **Edit memorybox config** — update HOST / PORT / USER / PASSWORD from the widget
-- **Open NAS in browser**
-- **View log**
-
-### Phase 4 — Notifications
-- Windows toast notifications (via BurntToast) for backup success / failure
-- Failure toasts identify "tech support: Sam" so the user knows who to contact
-- Optional channels (push to phone via Pushover/ntfy, email, Discord/Slack webhook) — add later if desired
-
-### Phase 5 — Linux Mint
-- Full-system backup engine (candidate: restic on `/` with excludes, or Clonezilla for bare-metal)
-- Bare-metal restore tooling (live USB + pull from memorybox)
-- systemd timer for scheduling
-- Equivalent setup scripts under `linux-mint/setup/`
+| Phase | What it shipped |
+|---|---|
+| 0 | Reusable PowerShell module, env-var setup, install-restic, preflight diagnostic, orchestrator |
+| 1 | Encrypted restic repo init, configurable backup targets, scheduled daily backup, retention (4 distinct snapshots), per-run logging, lock file |
+| 2 | Weekly integrity check (`restic check`), monthly test-restore round-trip, file-level restore CLI, restore runbook |
+| 3 | System tray widget -- status dashboard with action buttons, snapshot browser with file tree, on-demand actions, advanced submenu for tech tools |
+| 4 | BurntToast install, sticky toast notifications (`Reminder` scenario, stays until dismissed) for backup/verify/restore success and failure |
+| 5 | Linux Mint port -- bash equivalents of all the above, systemd user timers, full-system backup with sensible default excludes |
+| 6 | Pester v5 unit test suite (41 tests, all passing) |
+| 7 | Documentation polish |
 
 ## License
 
-See [LICENSE](LICENSE).
+MIT. See [LICENSE](LICENSE).
