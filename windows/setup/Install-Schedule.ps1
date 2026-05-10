@@ -103,8 +103,8 @@ New-TaskDefinition -Name 'Verify' `
     -ScriptRelative 'windows\agent\Invoke-Verify.ps1' `
     -Triggers (New-ScheduledTaskTrigger -Weekly -DaysOfWeek Sunday -At '04:00')
 
-# Monthly test-restore on the 1st at 05:00 (Phase 2)
-$monthlyTrigger = New-ScheduledTaskTrigger -Once -At '05:00' -RepetitionInterval (New-TimeSpan -Days 30) -RepetitionDuration ([TimeSpan]::MaxValue)
+# Monthly test-restore (~ every 30 days at 05:00). Phase 2.
+$monthlyTrigger = New-ScheduledTaskTrigger -Daily -DaysInterval 30 -At '05:00'
 New-TaskDefinition -Name 'TestRestore' `
     -ScriptRelative 'windows\agent\Invoke-TestRestore.ps1' `
     -Triggers $monthlyTrigger
