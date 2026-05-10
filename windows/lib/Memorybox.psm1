@@ -629,7 +629,19 @@ function Get-DefaultBackupTargets {
             '**/*.tmp',
             '**/$RECYCLE.BIN',
             '**/System Volume Information',
-            (Join-Path $env:USERPROFILE 'AppData')
+            (Join-Path $env:USERPROFILE 'AppData'),
+            # Antivirus quarantine paths -- Windows Defender blocks restic from reading
+            # these and the whole backup fails. Excluding them is universally safe.
+            '**/Quarantine',
+            '**/Quarantine/**',
+            '**/*.vir',
+            '**/*.virus',
+            '**/AdwCleaner/**',
+            '**/MBAMSwissArmy/**',
+            '**/Malwarebytes/**Quarantine**',
+            '**/Norton/**Quarantine**',
+            '**/Avast/**Quarantine**',
+            '**/Bitdefender/**Quarantine**'
         )
     }
 }
