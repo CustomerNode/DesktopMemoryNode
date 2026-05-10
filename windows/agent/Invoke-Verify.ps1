@@ -48,6 +48,7 @@ try {
     Connect-MemoryboxSmb
 
     $lock = Lock-NodeOperation -Name 'verify'
+    try { Invoke-Restic unlock --remove-all 2>$null | Out-Null } catch {}
 
     Write-DmnLog "Verify starting (ReadData=$ReadData ReadDataSubset='$ReadDataSubset')" -Kind 'verify'
 

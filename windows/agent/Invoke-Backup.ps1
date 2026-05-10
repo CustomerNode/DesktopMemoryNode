@@ -68,7 +68,21 @@ try {
 
     $lock = Lock-NodeOperation -Name 'backup'
 
-    $resticArgs = @('backup','--tag',$Tag)
+    # Clear any stale restic locks left behind by a previous crashed run.
+    # Safe because our own file lock above already ensured exclusive access.
+    try { Invoke-Restic unlock --remove-all 2>$null | Out-Null } catch {}
+
+    # Performance tuning:
+    #   --pack-size 64     : bigger packs = fewer SMB roundtrips (default 16 MB)
+    #   --read-concurrency 4 : parallel source reads (default 2)
+    # The FIRST backup is unavoidably slow because every byte must be uploaded.
+    # Subsequent backups are incremental (only changed files) and finish in minutes.
+    $resticArgs = @(
+        'backup',
+        '--tag', $Tag,
+        '--pack-size', '64',
+        '--read-concurrency', '4'
+    )
     if ($DryRun) { $resticArgs += '--dry-run' }
     foreach ($e in $targets.exclude) { $resticArgs += @('--exclude', $e) }
     $resticArgs += $targets.include

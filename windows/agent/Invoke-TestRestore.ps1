@@ -35,7 +35,7 @@ Widget-style test: type the password fresh, prove you still know it.
 [CmdletBinding()]
 param(
     [switch]$PromptPassword,
-    [long]$MaxFileSizeBytes = 1MB
+    [long]$MaxFileSizeBytes = 10MB
 )
 
 $ErrorActionPreference = 'Stop'
@@ -59,6 +59,7 @@ try {
     }
 
     $lock = Lock-NodeOperation -Name 'test-restore'
+    try { Invoke-Restic unlock --remove-all 2>$null | Out-Null } catch {}
     Write-DmnLog "Test-restore starting (scratch=$scratchRoot, max-file=$MaxFileSizeBytes bytes)" -Kind 'verify'
 
     # Pick newest snapshot
@@ -69,22 +70,31 @@ try {
     $newest = $snapshots | Sort-Object @{Expression={[datetime]$_.time}} -Descending | Select-Object -First 1
     Write-DmnLog "Using snapshot: $($newest.short_id) at $($newest.time)" -Kind 'verify'
 
-    # List files in the snapshot, pick a small one
+    # List files in the snapshot, pick a small one. Tiered: prefer tiny files
+    # (256 KB) for fast tests; fall back to anything ≤ -MaxFileSizeBytes (default 10 MB).
+    # Cap candidates at 200 so we don't scan forever on huge snapshots.
     $listRaw = Invoke-Restic ls --json $newest.id 2>$null
     if (-not $listRaw) { throw "ls returned nothing for snapshot $($newest.short_id)." }
-    $files = @()
+    $tinyFiles  = @()
+    $smallFiles = @()
+    $scanned    = 0
     foreach ($line in ($listRaw -split "`n")) {
         $line = $line.Trim()
         if (-not $line) { continue }
-        try {
-            $obj = $line | ConvertFrom-Json
-            if ($obj.struct_type -eq 'node' -and $obj.type -eq 'file' -and $obj.size -gt 0 -and $obj.size -le $MaxFileSizeBytes) {
-                $files += $obj
-            }
-        } catch {}
+        try { $obj = $line | ConvertFrom-Json } catch { continue }
+        if ($obj.struct_type -ne 'node' -or $obj.type -ne 'file') { continue }
+        if ($obj.size -le 0) { continue }
+        $scanned++
+        if ($obj.size -le 256KB) {
+            $tinyFiles += $obj
+            if ($tinyFiles.Count -ge 200) { break }
+        } elseif ($obj.size -le $MaxFileSizeBytes -and $smallFiles.Count -lt 200) {
+            $smallFiles += $obj
+        }
     }
+    $files = if ($tinyFiles.Count -gt 0) { $tinyFiles } else { $smallFiles }
     if ($files.Count -eq 0) {
-        throw "No suitable test file found in snapshot $($newest.short_id) (need a file > 0 bytes and <= $MaxFileSizeBytes bytes)."
+        throw "No suitable test file found in snapshot $($newest.short_id) (need a file > 0 bytes and <= $MaxFileSizeBytes bytes; scanned $scanned files)."
     }
     $testFile = $files | Get-Random
     Write-DmnLog "Picked test file: $($testFile.path) ($($testFile.size) bytes)" -Kind 'verify'

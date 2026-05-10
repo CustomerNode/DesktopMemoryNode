@@ -67,6 +67,7 @@ try {
     Connect-MemoryboxSmb
 
     $lock = Lock-NodeOperation -Name 'forget'
+    try { Invoke-Restic unlock --remove-all 2>$null | Out-Null } catch {}
 
     Write-DmnLog "Forget starting (target: 4 distinct slots -- today + ~7d + ~30d + manual; prune=$(-not $NoPrune))" -Kind 'forget'
 

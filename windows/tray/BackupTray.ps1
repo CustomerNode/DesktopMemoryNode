@@ -639,10 +639,10 @@ function Show-SnapshotsForm {
     $rightStatus.TextAlign = 'MiddleCenter'
     $split.Panel2.Controls.Add($rightStatus)
 
-    # Populate snapshots
+    # Populate snapshots (read-only ops use --no-lock so they never wait on a write lock)
     $form.Add_Shown({
         try {
-            $raw = Invoke-Restic snapshots --json 2>$null
+            $raw = Invoke-Restic snapshots --json --no-lock 2>$null
             if (-not $raw) { $leftStatus.Text = "No save points yet."; return }
             $snaps = @(($raw | Out-String).Trim() | ConvertFrom-Json)
             if ($snaps.Count -eq 0) { $leftStatus.Text = "No save points yet."; return }
@@ -664,27 +664,35 @@ function Show-SnapshotsForm {
         }
     }.GetNewClosure())
 
-    # On selection: populate file tree
+    # On selection: populate file tree. Capped at $maxNodes to avoid blowing
+    # up WinForms TreeView on huge snapshots (a 600 GB snapshot can have
+    # hundreds of thousands of files; the tree control gets unusable).
     $listView.Add_SelectedIndexChanged({
         $treeView.Nodes.Clear()
         if ($listView.SelectedItems.Count -eq 0) { return }
         $sid = $listView.SelectedItems[0].Tag
-        $rightStatus.Text = "Loading files..."
+        $rightStatus.Text = "Loading files (large snapshots can take a few seconds)..."
+        [System.Windows.Forms.Application]::DoEvents()
         $treeView.SuspendLayout()
+        $maxNodes = 5000
         try {
-            $raw = Invoke-Restic ls --json $sid 2>$null
+            $raw = Invoke-Restic ls --json --no-lock $sid 2>$null
             if (-not $raw) { $rightStatus.Text = "(empty)"; return }
             $rootNode = $treeView.Nodes.Add("Save point $($listView.SelectedItems[0].SubItems[2].Text)")
             $rootNode.NodeFont = $Font.BodyBold
             $count = 0
             $totalSize = 0L
+            $totalSeen = 0
+            $capped = $false
 
             foreach ($line in ($raw -split "`n")) {
                 $line = $line.Trim()
                 if (-not $line) { continue }
                 try { $obj = $line | ConvertFrom-Json } catch { continue }
-                if (-not $obj) { continue }
-                if ($obj.struct_type -ne 'node') { continue }
+                if (-not $obj -or $obj.struct_type -ne 'node') { continue }
+                $totalSeen++
+
+                if ($count -ge $maxNodes) { $capped = $true; continue }
 
                 $parts = @(($obj.path -split '/') | Where-Object { $_ })
                 if ($parts.Count -eq 0) { continue }
@@ -694,8 +702,6 @@ function Show-SnapshotsForm {
                     $part   = [string]$parts[$i]
                     $isLeaf = ($i -eq ($parts.Count - 1))
 
-                    # Find an existing child with this name. Use a typed search to avoid
-                    # PowerShell trying to cast strings to TreeNode in some overload paths.
                     $existing = $null
                     if ($cursor.Nodes.Count -gt 0) {
                         for ($j = 0; $j -lt $cursor.Nodes.Count; $j++) {
@@ -720,7 +726,6 @@ function Show-SnapshotsForm {
                             $label = "$part  ($sizeStr)"
                             $totalSize += $sz
                         }
-                        # Use the (string) overload explicitly by passing only one string arg
                         $newNode = $cursor.Nodes.Add([string]$label)
                         $cursor = $newNode
                     }
@@ -731,7 +736,11 @@ function Show-SnapshotsForm {
             $sizeFmt = if ($totalSize -ge 1MB) { '{0:N2} MB' -f ($totalSize / 1MB) }
                        elseif ($totalSize -ge 1KB) { '{0:N1} KB' -f ($totalSize / 1KB) }
                        else { "$totalSize B" }
-            $rightStatus.Text = "$count items, total $sizeFmt"
+            if ($capped) {
+                $rightStatus.Text = "Showing first $count of $totalSeen items (large snapshot truncated for display)"
+            } else {
+                $rightStatus.Text = "$count items, total $sizeFmt"
+            }
         } catch {
             $rightStatus.Text = "Couldn't load: " + $_.Exception.Message
             Write-DebugLine "Snapshots tree-load EXCEPTION: $($_.Exception.Message)"
@@ -1023,6 +1032,8 @@ function Start-TestRestore {
         Write-DebugLine "Start-TestRestore: Connect-MemoryboxSmb"
         Update-WorkingDialog -Form $progress -Message "Connecting to your Memory Box..."
         Connect-MemoryboxSmb
+        # Clear any stale repo locks left by previous crashed runs
+        try { Invoke-Restic unlock --remove-all 2>$null | Out-Null } catch {}
 
         Write-DebugLine "Start-TestRestore: invoking restic snapshots --json"
         Update-WorkingDialog -Form $progress -Message "Looking for the most recent save..."
@@ -1050,18 +1061,26 @@ function Start-TestRestore {
         $rawLs = Invoke-Restic ls --json $newest.id 2>$null
         Write-DebugLine "Start-TestRestore: ls raw length = $((($rawLs | Out-String) -as [string]).Length)"
 
-        $files = @()
+        # Pick a small file. Tiered cap: try ≤256 KB first (fast restore),
+        # then ≤10 MB if nothing matched. Stop at first 200 candidates so we
+        # don't spend forever scanning a 600+ GB snapshot.
+        $tinyFiles  = @()
+        $smallFiles = @()
+        $scanned    = 0
         foreach ($line in ($rawLs -split "`n")) {
             $line = $line.Trim(); if (-not $line) { continue }
             try { $obj = $line | ConvertFrom-Json } catch { continue }
-            if ($obj.struct_type -eq 'node' -and $obj.type -eq 'file' -and $obj.size -gt 0 -and $obj.size -le 1MB) {
-                $files += $obj
-            }
+            if ($obj.struct_type -ne 'node' -or $obj.type -ne 'file') { continue }
+            if ($obj.size -le 0) { continue }
+            $scanned++
+            if ($obj.size -le 256KB) { $tinyFiles += $obj; if ($tinyFiles.Count -ge 200) { break } }
+            elseif ($obj.size -le 10MB -and $smallFiles.Count -lt 200) { $smallFiles += $obj }
         }
-        Write-DebugLine "Start-TestRestore: found $($files.Count) suitable file(s)"
+        $files = if ($tinyFiles.Count -gt 0) { $tinyFiles } else { $smallFiles }
+        Write-DebugLine "Start-TestRestore: scanned $scanned, tiny=$($tinyFiles.Count), small=$($smallFiles.Count); using $($files.Count)"
         if ($files.Count -eq 0) {
             Close-WorkingDialog $progress
-            Show-TestRestoreResult -Title "No file to test with" -Body "Couldn't find a small file to test with. Try saving more files first." -Kind Error
+            Show-TestRestoreResult -Title "No file to test with" -Body "Couldn't find a file under 10 MB in the latest backup to test with." -Kind Error
             return
         }
         $testFile = $files | Get-Random
