@@ -879,30 +879,42 @@ function Show-TestRestoreResult {
 }
 
 function Start-TestRestore {
-    if (-not (Confirm-TestRestore)) { return }
+    Write-DebugLine "Start-TestRestore: confirm dialog"
+    if (-not (Confirm-TestRestore)) { Write-DebugLine "Start-TestRestore: cancelled at confirm"; return }
 
+    Write-DebugLine "Start-TestRestore: showing password prompt"
     $password = Show-PasswordPromptForm -Reason "Type the password to verify the backup is healthy."
-    if (-not $password) { return }
+    if (-not $password) { Write-DebugLine "Start-TestRestore: cancelled at password"; return }
+    Write-DebugLine "Start-TestRestore: got password (length $($password.Length))"
 
-    # Set the override and run the test-restore logic inline. We use Invoke-Restic
-    # directly so all output is captured in the tray process and we can show a
-    # result dialog -- no PowerShell window ever appears.
     Set-ResticPasswordOverride -Password $password
     $scratch = Join-Path $env:TEMP "dmn-tray-test-$([guid]::NewGuid().Guid.Substring(0,8))"
     try {
+        Write-DebugLine "Start-TestRestore: Connect-MemoryboxSmb"
         Connect-MemoryboxSmb
 
-        # Newest snapshot
+        Write-DebugLine "Start-TestRestore: invoking restic snapshots --json"
         $rawSnaps = Invoke-Restic snapshots --json 2>$null
-        $snaps    = if ($rawSnaps) { @(($rawSnaps | Out-String).Trim() | ConvertFrom-Json) } else { @() }
+        Write-DebugLine "Start-TestRestore: snapshots raw length = $((($rawSnaps | Out-String) -as [string]).Length)"
+
+        if (-not $rawSnaps -or -not ($rawSnaps | Out-String).Trim()) {
+            Show-TestRestoreResult -Title "Couldn't read backups" -Body "Either the password is wrong or the backup box can't be reached.  $(Get-DmnSupportLine)" -Kind Error
+            return
+        }
+
+        $snaps = @(($rawSnaps | Out-String).Trim() | ConvertFrom-Json)
+        Write-DebugLine "Start-TestRestore: parsed $($snaps.Count) snapshot(s)"
         if ($snaps.Count -eq 0) {
             Show-TestRestoreResult -Title "No snapshots yet" -Body "There aren't any backups in your Memory Box to test. Save your files at least once first." -Kind Error
             return
         }
         $newest = $snaps | Sort-Object @{Expression={[datetime]$_.time}} -Descending | Select-Object -First 1
+        Write-DebugLine "Start-TestRestore: newest snapshot $($newest.short_id)"
 
-        # Small test file
+        Write-DebugLine "Start-TestRestore: invoking restic ls"
         $rawLs = Invoke-Restic ls --json $newest.id 2>$null
+        Write-DebugLine "Start-TestRestore: ls raw length = $((($rawLs | Out-String) -as [string]).Length)"
+
         $files = @()
         foreach ($line in ($rawLs -split "`n")) {
             $line = $line.Trim(); if (-not $line) { continue }
@@ -911,34 +923,41 @@ function Start-TestRestore {
                 $files += $obj
             }
         }
+        Write-DebugLine "Start-TestRestore: found $($files.Count) suitable file(s)"
         if ($files.Count -eq 0) {
             Show-TestRestoreResult -Title "No file to test with" -Body "Couldn't find a small file to test with. Try saving more files first." -Kind Error
             return
         }
         $testFile = $files | Get-Random
+        Write-DebugLine "Start-TestRestore: picked $($testFile.path) ($($testFile.size) bytes)"
+
         New-Item -ItemType Directory -Path $scratch -Force | Out-Null
-        $prevPref = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
+        $prevPref = $ErrorActionPreference
+        $ErrorActionPreference = 'Continue'
         try {
+            Write-DebugLine "Start-TestRestore: running restore"
             Invoke-Restic restore $newest.id --target $scratch --include $testFile.path 2>&1 | Out-Null
+            Write-DebugLine "Start-TestRestore: restore finished"
         } finally { $ErrorActionPreference = $prevPref }
 
         $restored = Get-ChildItem -Path $scratch -Recurse -File -ErrorAction SilentlyContinue |
                     Where-Object { $_.Length -eq $testFile.size } | Select-Object -First 1
         if (-not $restored) {
-            # Most likely cause: wrong password
+            Write-DebugLine "Start-TestRestore: no restored file found in scratch"
             Show-TestRestoreResult -Title "Test didn't work" -Body "Couldn't decrypt and recover a file from the backup box. The password might be wrong, or the backup is unreachable.  $(Get-DmnSupportLine)" -Kind Error
             return
         }
 
-        # Success
+        Write-DebugLine "Start-TestRestore: SUCCESS, recovered $($restored.Length) bytes"
         Set-NodeState -Updates @{
             LastTestRestoreAt = (Get-Date).ToString('o')
             LastTestRestoreOk = $true
         }
         $size = $restored.Length
-        $msg  = "I successfully decrypted and recovered a $size-byte file from your Memory Box. Your password is correct and the backup is healthy."
-        Show-TestRestoreResult -Title "Test passed" -Body $msg -Kind Success
+        Show-TestRestoreResult -Title "Test passed" -Body "I successfully decrypted and recovered a $size-byte file from your Memory Box. Your password is correct and the backup is healthy." -Kind Success
     } catch {
+        Write-DebugLine "Start-TestRestore: EXCEPTION $($_.Exception.Message)"
+        Write-DebugLine "  Stack: $($_.ScriptStackTrace)"
         Show-TestRestoreResult -Title "Test didn't work" -Body "Something went wrong: $($_.Exception.Message).  $(Get-DmnSupportLine)" -Kind Error
     } finally {
         Clear-ResticPasswordOverride
