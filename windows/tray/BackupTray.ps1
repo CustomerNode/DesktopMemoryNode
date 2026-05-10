@@ -794,7 +794,14 @@ function Start-ManualBackup {
     Start-Process -FilePath 'powershell.exe' `
         -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-File',"`"$script`"",'-Tag','manual') `
         -WindowStyle Hidden
-    Send-MemoryboxToast -Title "Saving your files" -Body "I'm saving a fresh copy of your files to the backup box. I'll let you know when I'm done." -Level Info
+    Send-MemoryboxToast -Title "Saving your files" -Body "I'm saving a fresh copy of your files to the backup box. I'll let you know when I'm done -- usually a few minutes." -Level Info
+    # Also show a visible window so user has immediate confirmation
+    [System.Windows.Forms.MessageBox]::Show(
+        "Saving your files to the Memory Box now.`r`n`r`nThis usually takes a few minutes. You'll get a notification when it's done.",
+        "Memory Box",
+        'OK',
+        'Information'
+    ) | Out-Null
 }
 
 function Confirm-TestRestore {
@@ -843,11 +850,13 @@ don't have it written down, ask $tech.
 function Show-PasswordPromptForm {
     <#
     .SYNOPSIS
-    Modal WinForms password prompt. Returns the typed password as a string, or $null if cancelled.
+    Modal WinForms password prompt. Returns the typed password, or $null if cancelled.
+    Uses the form's Tag property (avoids $script: scoping issues with nested function closures).
     #>
     param([string]$Reason = "Type the encryption password:")
 
     $form = New-MemoryForm -Title "Memory Box -- type your password" -Width 480 -Height 260 -FixedSize
+    $form.Tag = $null   # this stores the result -- closure captures $form, not a variable name
 
     $hero = New-Object System.Windows.Forms.Label
     $hero.Text      = "Type your password"
@@ -872,12 +881,11 @@ function Show-PasswordPromptForm {
     $tb.UseSystemPasswordChar = $true
     $form.Controls.Add($tb)
 
-    $script:typedPassword = $null
-
     $okBtn = New-PrimaryButton -Text "OK" -Width 110
     $okBtn.Location = New-Object System.Drawing.Point(225, 175)
     $okBtn.Add_Click({
-        $script:typedPassword = $tb.Text
+        $form.Tag = [string]$tb.Text
+        Write-DebugLine ("PasswordPrompt: OK clicked, captured length=" + ($tb.Text.Length))
         $form.Close()
     }.GetNewClosure())
     $form.AcceptButton = $okBtn
@@ -885,14 +893,20 @@ function Show-PasswordPromptForm {
 
     $cancelBtn = New-SecondaryButton -Text "Cancel" -Width 110
     $cancelBtn.Location = New-Object System.Drawing.Point(345, 175)
-    $cancelBtn.Add_Click({ $script:typedPassword = $null; $form.Close() }.GetNewClosure())
+    $cancelBtn.Add_Click({
+        $form.Tag = $null
+        Write-DebugLine "PasswordPrompt: Cancel clicked"
+        $form.Close()
+    }.GetNewClosure())
     $form.CancelButton = $cancelBtn
     $form.Controls.Add($cancelBtn)
 
     $form.Add_Shown({ $tb.Focus() | Out-Null }.GetNewClosure())
 
     $form.ShowDialog() | Out-Null
-    return $script:typedPassword
+    $captured = $form.Tag
+    Write-DebugLine ("PasswordPrompt: returning length=" + (if ($captured) { $captured.Length } else { 0 }))
+    return $captured
 }
 
 function Show-TestRestoreResult {
@@ -928,6 +942,65 @@ function Show-TestRestoreResult {
     $form.ShowDialog() | Out-Null
 }
 
+function Show-WorkingDialog {
+    <#
+    .SYNOPSIS
+    Shows a non-modal "Working..." progress window with an updatable message.
+    Returns the form so the caller can update .Tag.Label.Text and close it when done.
+    #>
+    param([string]$InitialMessage = "Working on it...")
+
+    $form = New-Object System.Windows.Forms.Form
+    $form.Text          = "Memory Box"
+    $form.Size          = New-Object System.Drawing.Size(440, 180)
+    $form.StartPosition = 'CenterScreen'
+    $form.BackColor     = $Theme.Bg
+    $form.Font          = $Font.Body
+    $form.Icon          = New-MemoryBoxIcon
+    $form.FormBorderStyle = 'FixedDialog'
+    $form.ControlBox    = $false
+    $form.MinimizeBox   = $false
+    $form.MaximizeBox   = $false
+    $form.ShowInTaskbar = $true
+    $form.TopMost       = $true
+
+    $hero = New-Object System.Windows.Forms.Label
+    $hero.Text      = "Working..."
+    $hero.Font      = $Font.Hero
+    $hero.ForeColor = $Theme.Primary
+    $hero.AutoSize  = $true
+    $hero.Location  = New-Object System.Drawing.Point(25, 18)
+    $form.Controls.Add($hero)
+
+    $msgLbl = New-Object System.Windows.Forms.Label
+    $msgLbl.Text      = $InitialMessage
+    $msgLbl.Font      = $Font.Body
+    $msgLbl.ForeColor = $Theme.Text
+    $msgLbl.AutoSize  = $false
+    $msgLbl.Size      = New-Object System.Drawing.Size(390, 50)
+    $msgLbl.Location  = New-Object System.Drawing.Point(25, 80)
+    $form.Controls.Add($msgLbl)
+
+    $form.Tag = $msgLbl
+    $form.Show()
+    $form.Activate()
+    [System.Windows.Forms.Application]::DoEvents()
+    return $form
+}
+
+function Update-WorkingDialog {
+    param([System.Windows.Forms.Form]$Form, [string]$Message)
+    if ($Form -and $Form.Tag) {
+        $Form.Tag.Text = $Message
+        [System.Windows.Forms.Application]::DoEvents()
+    }
+}
+
+function Close-WorkingDialog {
+    param([System.Windows.Forms.Form]$Form)
+    if ($Form) { try { $Form.Close(); $Form.Dispose() } catch {} }
+}
+
 function Start-TestRestore {
     Write-DebugLine "Start-TestRestore: confirm dialog"
     if (-not (Confirm-TestRestore)) { Write-DebugLine "Start-TestRestore: cancelled at confirm"; return }
@@ -937,17 +1010,21 @@ function Start-TestRestore {
     if (-not $password) { Write-DebugLine "Start-TestRestore: cancelled at password"; return }
     Write-DebugLine "Start-TestRestore: got password (length $($password.Length))"
 
+    $progress = Show-WorkingDialog -InitialMessage "Connecting to your Memory Box..."
     Set-ResticPasswordOverride -Password $password
     $scratch = Join-Path $env:TEMP "dmn-tray-test-$([guid]::NewGuid().Guid.Substring(0,8))"
     try {
         Write-DebugLine "Start-TestRestore: Connect-MemoryboxSmb"
+        Update-WorkingDialog -Form $progress -Message "Connecting to your Memory Box..."
         Connect-MemoryboxSmb
 
         Write-DebugLine "Start-TestRestore: invoking restic snapshots --json"
+        Update-WorkingDialog -Form $progress -Message "Looking for the most recent save..."
         $rawSnaps = Invoke-Restic snapshots --json 2>$null
         Write-DebugLine "Start-TestRestore: snapshots raw length = $((($rawSnaps | Out-String) -as [string]).Length)"
 
         if (-not $rawSnaps -or -not ($rawSnaps | Out-String).Trim()) {
+            Close-WorkingDialog $progress
             Show-TestRestoreResult -Title "Couldn't read backups" -Body "Either the password is wrong or the backup box can't be reached.  $(Get-DmnSupportLine)" -Kind Error
             return
         }
@@ -955,6 +1032,7 @@ function Start-TestRestore {
         $snaps = @(($rawSnaps | Out-String).Trim() | ConvertFrom-Json)
         Write-DebugLine "Start-TestRestore: parsed $($snaps.Count) snapshot(s)"
         if ($snaps.Count -eq 0) {
+            Close-WorkingDialog $progress
             Show-TestRestoreResult -Title "No snapshots yet" -Body "There aren't any backups in your Memory Box to test. Save your files at least once first." -Kind Error
             return
         }
@@ -962,6 +1040,7 @@ function Start-TestRestore {
         Write-DebugLine "Start-TestRestore: newest snapshot $($newest.short_id)"
 
         Write-DebugLine "Start-TestRestore: invoking restic ls"
+        Update-WorkingDialog -Form $progress -Message "Picking a file to test..."
         $rawLs = Invoke-Restic ls --json $newest.id 2>$null
         Write-DebugLine "Start-TestRestore: ls raw length = $((($rawLs | Out-String) -as [string]).Length)"
 
@@ -975,6 +1054,7 @@ function Start-TestRestore {
         }
         Write-DebugLine "Start-TestRestore: found $($files.Count) suitable file(s)"
         if ($files.Count -eq 0) {
+            Close-WorkingDialog $progress
             Show-TestRestoreResult -Title "No file to test with" -Body "Couldn't find a small file to test with. Try saving more files first." -Kind Error
             return
         }
@@ -982,17 +1062,17 @@ function Start-TestRestore {
         Write-DebugLine "Start-TestRestore: picked $($testFile.path) ($($testFile.size) bytes)"
 
         New-Item -ItemType Directory -Path $scratch -Force | Out-Null
+        Update-WorkingDialog -Form $progress -Message "Decrypting and restoring '$([IO.Path]::GetFileName($testFile.path))'..."
         Write-DebugLine "Start-TestRestore: running restore"
-        # Restic on Windows emits a benign NativeCommandError when restoring under
-        # %TEMP% (can't set timestamps on the synthetic C:\Users parent dir).
-        # Swallow it -- we verify success by file existence + size below.
         try { Invoke-Restic restore $newest.id --target $scratch --include $testFile.path 2>$null | Out-Null } catch {}
         Write-DebugLine "Start-TestRestore: restore finished"
 
+        Update-WorkingDialog -Form $progress -Message "Verifying the file came back intact..."
         $restored = Get-ChildItem -Path $scratch -Recurse -File -ErrorAction SilentlyContinue |
                     Where-Object { $_.Length -eq $testFile.size } | Select-Object -First 1
         if (-not $restored) {
             Write-DebugLine "Start-TestRestore: no restored file found in scratch"
+            Close-WorkingDialog $progress
             Show-TestRestoreResult -Title "Test didn't work" -Body "Couldn't decrypt and recover a file from the backup box. The password might be wrong, or the backup is unreachable.  $(Get-DmnSupportLine)" -Kind Error
             return
         }
@@ -1003,10 +1083,12 @@ function Start-TestRestore {
             LastTestRestoreOk = $true
         }
         $size = $restored.Length
+        Close-WorkingDialog $progress
         Show-TestRestoreResult -Title "Test passed" -Body "I successfully decrypted and recovered a $size-byte file from your Memory Box. Your password is correct and the backup is healthy." -Kind Success
     } catch {
         Write-DebugLine "Start-TestRestore: EXCEPTION $($_.Exception.Message)"
         Write-DebugLine "  Stack: $($_.ScriptStackTrace)"
+        Close-WorkingDialog $progress
         Show-TestRestoreResult -Title "Test didn't work" -Body "Something went wrong: $($_.Exception.Message).  $(Get-DmnSupportLine)" -Kind Error
     } finally {
         Clear-ResticPasswordOverride
