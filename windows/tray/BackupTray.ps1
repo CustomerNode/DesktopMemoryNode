@@ -761,6 +761,9 @@ function Show-SnapshotsForm {
             $rootNode = New-Object System.Windows.Forms.TreeNode `
                 "Save point $($listView.SelectedItems[0].SubItems[2].Text)"
             $rootNode.NodeFont = $Font.BodyBold
+            # Store snapshot ID on the root so BeforeExpand can recover it
+            # if listView selection got cleared
+            $rootNode.Tag = @{ SnapshotId = $sid; IsRoot = $true }
             [void]$treeView.Nodes.Add($rootNode)
 
             foreach ($p in $paths) {
@@ -785,43 +788,83 @@ function Show-SnapshotsForm {
     }.GetNewClosure())
 
     # Lazy-load: when a directory node is expanded, fetch its immediate children
-    # (one restic ls call scoped to that path). Replace the placeholder.
+    # (one restic ls call scoped to that path). Defensive throughout because
+    # WinForms event handlers running closures over PowerShell scopes are flaky.
     $treeView.add_BeforeExpand({
         param($s, $e)
-        $node = $e.Node
-        $tag  = $node.Tag
-        if (-not $tag -or -not $tag.ContainsKey('Path') -or $tag.Loaded) { return }
-
-        $sid  = $listView.SelectedItems[0].Tag
-        $path = $tag.Path
-
-        # Show "Loading..." in the placeholder + status bar
-        $node.Nodes[0].Text = "Loading $path ..."
-        $rightStatus.Text   = "Loading $path ..."
-        [System.Windows.Forms.Application]::DoEvents()
-
         try {
-            $children = @(Get-ImmediateChildren -SnapshotId $sid -Path $path)
-            $treeView.BeginUpdate()
-            $node.Nodes.Clear()
-            foreach ($c in $children) {
-                if ($c.type -eq 'dir') {
-                    [void]$node.Nodes.Add((New-DirNode -DisplayName $c.name -FullPath $c.path))
-                } else {
-                    [void]$node.Nodes.Add((New-FileNode -Name $c.name -Size ([long]$c.size)))
+            $node = $e.Node
+            if (-not $node) { return }
+            $tag = $node.Tag
+            # Tag is null for the root "Save point ..." node -- nothing to load
+            if (-not $tag) { return }
+            # Tag is a hashtable for our dir/file nodes; if not a hashtable, bail
+            if ($tag -isnot [hashtable]) { return }
+            if (-not $tag.ContainsKey('Path')) { return }
+            if ($tag['Loaded']) { return }
+
+            # Find the snapshot ID. Prefer listView selection but fall back to
+            # the cached value on the root node, in case selection got cleared.
+            $sid = $null
+            if ($listView.SelectedItems.Count -gt 0) {
+                $selItem = $listView.SelectedItems[0]
+                if ($selItem) { $sid = $selItem.Tag }
+            }
+            if (-not $sid -and $treeView.Nodes.Count -gt 0) {
+                $rt = $treeView.Nodes[0]
+                if ($rt -and $rt.Tag -is [hashtable] -and $rt.Tag.ContainsKey('SnapshotId')) {
+                    $sid = $rt.Tag['SnapshotId']
                 }
             }
-            $tag.Loaded = $true
-            $node.Tag   = $tag
-            $treeView.EndUpdate()
+            if (-not $sid) {
+                $rightStatus.Text = "Couldn't determine which save point to load from."
+                Write-DebugLine "BeforeExpand: no snapshot ID could be resolved"
+                return
+            }
 
-            $dirCount  = ($children | Where-Object { $_.type -eq 'dir' }).Count
-            $fileCount = ($children | Where-Object { $_.type -eq 'file' }).Count
+            $path = [string]$tag['Path']
+            if (-not $path) { return }
+
+            # Update the placeholder text safely
+            if ($node.Nodes.Count -gt 0) { $node.Nodes[0].Text = "Loading $path ..." }
+            $rightStatus.Text = "Loading $path ..."
+            [System.Windows.Forms.Application]::DoEvents()
+
+            $children = @(Get-ImmediateChildren -SnapshotId $sid -Path $path)
+            $treeView.BeginUpdate()
+            try {
+                $node.Nodes.Clear()
+                foreach ($c in $children) {
+                    if (-not $c -or -not $c.name) { continue }
+                    $cname = [string]$c.name
+                    $cpath = [string]$c.path
+                    if (-not $cpath) { continue }
+                    if ($c.type -eq 'dir') {
+                        [void]$node.Nodes.Add((New-DirNode -DisplayName $cname -FullPath $cpath))
+                    } else {
+                        $sz = if ($null -ne $c.size) { [long]$c.size } else { 0 }
+                        [void]$node.Nodes.Add((New-FileNode -Name $cname -Size $sz))
+                    }
+                }
+                $tag['Loaded'] = $true
+                $node.Tag = $tag
+            } finally {
+                $treeView.EndUpdate()
+            }
+
+            $dirCount  = @($children | Where-Object { $_.type -eq 'dir' }).Count
+            $fileCount = @($children | Where-Object { $_.type -eq 'file' }).Count
             $rightStatus.Text = "$path : $dirCount folder(s), $fileCount file(s)"
         } catch {
-            $node.Nodes.Clear()
-            [void]$node.Nodes.Add("(error loading: $($_.Exception.Message))")
-            $rightStatus.Text = "Couldn't load $path : $($_.Exception.Message)"
+            $msg = $_.Exception.Message
+            $stk = $_.ScriptStackTrace
+            Write-DebugLine "BeforeExpand EXCEPTION: $msg"
+            Write-DebugLine "  Stack: $stk"
+            try {
+                $node.Nodes.Clear()
+                [void]$node.Nodes.Add("(error loading: $msg)")
+            } catch {}
+            $rightStatus.Text = "Couldn't load: $msg"
         }
     }.GetNewClosure())
 
