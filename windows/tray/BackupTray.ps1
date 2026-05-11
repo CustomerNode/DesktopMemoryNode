@@ -23,7 +23,11 @@ param(
     [switch]$ShowSnapshots,
     # Test hook -- builds each form builder and immediately closes it so we can
     # verify there are no construction-time exceptions. Used by Test-TrayLogic.ps1.
-    [switch]$SmokeTest
+    [switch]$SmokeTest,
+    # End-to-end test: opens the snapshots form, selects the first snapshot,
+    # programmatically expands the first dir node, verifies no exception. Exits
+    # with the count of failures.
+    [switch]$BrowseTest
 )
 
 $ErrorActionPreference = 'Continue'
@@ -858,13 +862,18 @@ function Show-SnapshotsForm {
         } catch {
             $msg = $_.Exception.Message
             $stk = $_.ScriptStackTrace
-            Write-DebugLine "BeforeExpand EXCEPTION: $msg"
+            $line = $_.InvocationInfo.ScriptLineNumber
+            Write-DebugLine "BeforeExpand EXCEPTION at line ${line}: $msg"
             Write-DebugLine "  Stack: $stk"
+            Write-DebugLine "  Position: $($_.InvocationInfo.PositionMessage)"
             try {
                 $node.Nodes.Clear()
-                [void]$node.Nodes.Add("(error loading: $msg)")
+                [void]$node.Nodes.Add("(error: $msg)")
             } catch {}
-            $rightStatus.Text = "Couldn't load: $msg"
+            # Surface the line number in the status so the user can read it back to me.
+            # Trim long messages to keep the status bar readable.
+            $shortMsg = if ($msg.Length -gt 100) { $msg.Substring(0,100) + '...' } else { $msg }
+            $rightStatus.Text = "Couldn't load (line ${line}): $shortMsg"
         }
     }.GetNewClosure())
 
@@ -1423,6 +1432,7 @@ if ($SmokeTest) {
     Write-Host "SmokeTest: $failed failure(s)"
     exit $failed
 }
+
 
 # If invoked with -ShowStatus / -ShowSnapshots, just open that form and exit (no tray).
 if ($ShowStatus) {
