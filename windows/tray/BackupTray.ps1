@@ -69,11 +69,58 @@ $libPath  = Join-Path $here '..\lib\Memorybox.psm1'
 $repoRoot = (Resolve-Path (Join-Path $here '..\..')).Path
 Import-Module $libPath -Force
 
-# Script-scope cache, MUST be initialized at top-level. WinForms event handler
-# closures can't see script-scope vars assigned inside other functions in some
-# PS 5.1 configurations -- caused null-indexing crashes when the user selected
-# a snapshot in the browser.
-$script:SnapshotPaths = @{}
+# =====================================================================================
+# Snapshot-browser helpers (script scope -- WinForms event-handler closures
+# can't reliably see functions defined inside another function, so these MUST
+# be at top level)
+# =====================================================================================
+
+function Format-TreeSize {
+    param([long]$Bytes)
+    if ($Bytes -ge 1GB) { '{0:N1} GB' -f ($Bytes / 1GB) }
+    elseif ($Bytes -ge 1MB) { '{0:N1} MB' -f ($Bytes / 1MB) }
+    elseif ($Bytes -ge 1KB) { '{0:N0} KB' -f ($Bytes / 1KB) }
+    else { "$Bytes B" }
+}
+
+function Get-ImmediateChildren {
+    param([string]$SnapshotId, [string]$Path)
+    $raw = Invoke-Restic ls --json --no-lock $SnapshotId $Path 2>$null
+    if (-not $raw) { return @() }
+    $parentSlash = if ($Path.EndsWith('/')) { $Path } else { $Path + '/' }
+    $children = @()
+    $lineCount = 0
+    foreach ($line in ($raw -split "`n")) {
+        $line = $line.Trim()
+        if (-not $line) { continue }
+        $lineCount++
+        if ($lineCount -gt 50000) { break }
+        try { $obj = $line | ConvertFrom-Json } catch { continue }
+        if (-not $obj -or $obj.struct_type -ne 'node') { continue }
+        if ($obj.path -eq $Path) { continue }
+        if (-not $obj.path.StartsWith($parentSlash)) { continue }
+        $rest = $obj.path.Substring($parentSlash.Length)
+        if ($rest.Contains('/')) { continue }
+        $children += $obj
+    }
+    $children | Sort-Object @{Expression={ if ($_.type -eq 'dir') {0} else {1} }}, @{Expression={ $_.name }}
+}
+
+function New-DirNode {
+    param([string]$DisplayName, [string]$FullPath)
+    $node = New-Object System.Windows.Forms.TreeNode $DisplayName
+    $node.Tag = @{ Path = $FullPath; Loaded = $false }
+    [void]$node.Nodes.Add('Loading...')
+    return $node
+}
+
+function New-FileNode {
+    param([string]$Name, [long]$Size)
+    $label = "$Name  ($(Format-TreeSize $Size))"
+    $node = New-Object System.Windows.Forms.TreeNode $label
+    $node.Tag = @{ IsFile = $true }
+    return $node
+}
 
 # =====================================================================================
 # Visual system -- colors, fonts, helpers
@@ -586,6 +633,13 @@ function Show-StatusForm {
 # =====================================================================================
 
 function Show-SnapshotsForm {
+    Write-DebugLine "Show-SnapshotsForm: building form"
+    # CRITICAL: this MUST be a local variable, not $script:. WinForms event-handler
+    # closures created by .GetNewClosure() reliably capture local variables but
+    # NOT $script:-scoped ones (whose lookup happens in a different SessionState
+    # at event-fire time). Using a local + GetNewClosure makes both Add_Shown and
+    # SelectedIndexChanged share the same hashtable reference.
+    $snapshotPaths = @{}
     $form = New-MemoryForm -Title "Files saved to your Memory Box" -Width 1000 -Height 640
 
     $hero = New-Object System.Windows.Forms.Label
@@ -653,100 +707,66 @@ function Show-SnapshotsForm {
     $split.Panel2.Controls.Add($rightStatus)
 
     # Populate snapshots (read-only ops use --no-lock so they never wait on a write lock)
-    # NOTE: $script:SnapshotPaths is initialized at script scope at top of file.
+    # NOTE: $snapshotPaths is a function-local var declared at top of Show-SnapshotsForm.
     $form.Add_Shown({
+        Write-DebugLine "Show-SnapshotsForm Add_Shown: starting"
         try {
             $raw = Invoke-Restic snapshots --json --no-lock 2>$null
+            Write-DebugLine "  raw len = $((($raw | Out-String) -as [string]).Length)"
             if (-not $raw) { $leftStatus.Text = "No save points yet."; return }
-            # ConvertFrom-Json on a JSON array returns a .NET array, which the
-            # pipeline emits as a SINGLE item; @() wraps that into [array-of-array].
-            # Explicitly normalize to a flat array.
             $parsed = ($raw | Out-String).Trim() | ConvertFrom-Json
-            $snaps = if ($null -eq $parsed) { @() }
-                     elseif ($parsed -is [array]) { $parsed }
-                     else { @($parsed) }
+            # PS 5.1 quirk: `$x = if (...) { $arrayValue }` can make $x null when
+            # the if-expression's branch returns an array. Use a List + manual
+            # iteration to guarantee $snaps is always a real array.
+            $snaps = New-Object 'System.Collections.Generic.List[object]'
+            if ($null -ne $parsed) {
+                foreach ($p in $parsed) { [void]$snaps.Add($p) }
+            }
+            Write-DebugLine "  parsed $($snaps.Count) snapshot(s)"
             if ($snaps.Count -eq 0) { $leftStatus.Text = "No save points yet."; return }
+            Write-DebugLine "  about to sort"
             $sorted = $snaps | Where-Object { $_ -and $_.time } | Sort-Object @{Expression={[datetime]$_.time}} -Descending
+            Write-DebugLine "  sorted (count=$(@($sorted).Count))"
+            $iter = 0
             foreach ($s in $sorted) {
+                $iter++
+                Write-DebugLine "  iter $iter : id=$($s.short_id) time=$($s.time) tagsType=$(if($s.tags){$s.tags.GetType().Name}else{'null'}) pathsType=$(if($s.paths){$s.paths.GetType().Name}else{'null'})"
                 $kind = if ($s.tags -contains 'manual')    { 'You asked' }
                          elseif ($s.tags -contains 'scheduled') { 'Auto-save' }
                          else { (($s.tags) -join ',') }
+                Write-DebugLine "    kind=$kind"
                 $when = Format-FriendlyDateTime ([datetime]$s.time)
+                Write-DebugLine "    when=$when"
                 $item = New-Object System.Windows.Forms.ListViewItem ($when)
                 [void]$item.SubItems.Add($kind)
                 [void]$item.SubItems.Add($s.short_id)
                 $item.Tag = $s.id
                 [void]$listView.Items.Add($item)
-                # Cache paths for instant tree-root rendering on click
-                $script:SnapshotPaths[$s.id] = @($s.paths)
+                Write-DebugLine "    added to listview"
+                $snapshotPaths[$s.id] = @($s.paths)
+                Write-DebugLine "    cached paths"
             }
             $leftStatus.Text = "$($sorted.Count) save point$(if ($sorted.Count -eq 1) {''} else {'s'})"
+            Write-DebugLine "  populated $($listView.Items.Count) items, cache=$($snapshotPaths.Count)"
+
+            # Auto-select first snapshot so the tree populates immediately when
+            # the user opens the form. Better UX -- they don't have to click the
+            # snapshot before seeing folders. Also gives test drivers a stable
+            # entry point: opening the form alone exercises the click chain.
+            if ($listView.Items.Count -gt 0) {
+                $listView.Items[0].Selected = $true
+                Write-DebugLine "  auto-selected item 0"
+            }
         } catch {
+            Write-DebugLine "Add_Shown EXCEPTION: $($_.Exception.Message)"
             $leftStatus.Text = "Couldn't load: " + $_.Exception.Message
         }
     }.GetNewClosure())
 
-    # Helper: format a byte count for the tree label
-    function Format-TreeSize {
-        param([long]$Bytes)
-        if ($Bytes -ge 1GB) { '{0:N1} GB' -f ($Bytes / 1GB) }
-        elseif ($Bytes -ge 1MB) { '{0:N1} MB' -f ($Bytes / 1MB) }
-        elseif ($Bytes -ge 1KB) { '{0:N0} KB' -f ($Bytes / 1KB) }
-        else { "$Bytes B" }
-    }
-
-    # Helper: list immediate children of a directory inside a snapshot.
-    # Calls `restic ls $sid <path>` (which IS recursive) and filters to the
-    # entries whose path is one level deeper than $Path. Cap at 50000 lines
-    # parsed so a single huge dir never hangs the UI more than a few seconds.
-    function Get-ImmediateChildren {
-        param([string]$SnapshotId, [string]$Path)
-
-        $raw = Invoke-Restic ls --json --no-lock $SnapshotId $Path 2>$null
-        if (-not $raw) { return @() }
-
-        $parentSlash = if ($Path.EndsWith('/')) { $Path } else { $Path + '/' }
-        $children = @()
-        $lineCount = 0
-        foreach ($line in ($raw -split "`n")) {
-            $line = $line.Trim()
-            if (-not $line) { continue }
-            $lineCount++
-            if ($lineCount -gt 50000) { break }
-            try { $obj = $line | ConvertFrom-Json } catch { continue }
-            if (-not $obj -or $obj.struct_type -ne 'node') { continue }
-            if ($obj.path -eq $Path) { continue }
-            if (-not $obj.path.StartsWith($parentSlash)) { continue }
-            $rest = $obj.path.Substring($parentSlash.Length)
-            if ($rest.Contains('/')) { continue }   # nested deeper, skip
-            $children += $obj
-        }
-        # Folders first, then files; both alphabetical
-        $children | Sort-Object @{Expression={ if ($_.type -eq 'dir') {0} else {1} }}, @{Expression={ $_.name }}
-    }
-
-    # Build a tree node for a directory. Marks it as "needs loading" via a
-    # placeholder child so WinForms shows the [+] expand arrow.
-    function New-DirNode {
-        param([string]$DisplayName, [string]$FullPath)
-        $node = New-Object System.Windows.Forms.TreeNode $DisplayName
-        $node.Tag = @{ Path = $FullPath; Loaded = $false }
-        # Add a placeholder so the [+] appears
-        [void]$node.Nodes.Add('Loading...')
-        return $node
-    }
-
-    function New-FileNode {
-        param([string]$Name, [long]$Size)
-        $label = "$Name  ($(Format-TreeSize $Size))"
-        $node = New-Object System.Windows.Forms.TreeNode $label
-        $node.Tag = @{ IsFile = $true }
-        return $node
-    }
-
     # On snapshot selection: populate top-level paths from snapshot metadata.
     # No restic ls call -- we already know the paths from `restic snapshots --json`.
     $listView.Add_SelectedIndexChanged({
+        Write-DebugLine "SelectedIndexChanged FIRED (selected count = $($listView.SelectedItems.Count))"
         $treeView.BeginUpdate()
         try {
             $treeView.Nodes.Clear()
@@ -755,13 +775,29 @@ function Show-SnapshotsForm {
                 return
             }
             $sid = $listView.SelectedItems[0].Tag
+            Write-DebugLine "  sid = $sid"
             $rightStatus.Text = "Loading folder list..."
 
-            # We stored the snapshot object's paths in a separate dictionary at
-            # populate time; pull them back out. Guard against the dict itself
-            # being null (PS 5.1 WinForms event-handler scope quirk).
-            if ($null -eq $script:SnapshotPaths) { $script:SnapshotPaths = @{} }
-            $paths = $script:SnapshotPaths[$sid]
+            # Re-init the cache if missing -- WinForms event handler scope quirk
+            if ($null -eq $snapshotPaths) { $snapshotPaths = @{} }
+            $paths = $snapshotPaths[$sid]
+            Write-DebugLine "  paths cache has $(@($paths).Count) entries for this sid"
+            if (-not $paths -or @($paths).Count -eq 0) {
+                # Cache miss -- query the snapshot directly. Means the WinForms
+                # closure couldn't see the cache; fall back to live restic call.
+                Write-DebugLine "  cache miss -- querying restic snapshots --json"
+                try {
+                    $rawSnap = Invoke-Restic snapshots --json --no-lock $sid 2>$null
+                    $parsedSnap = ($rawSnap | Out-String).Trim() | ConvertFrom-Json
+                    $snapsArr = if ($null -eq $parsedSnap) { @() } elseif ($parsedSnap -is [array]) { $parsedSnap } else { @($parsedSnap) }
+                    if ($snapsArr.Count -gt 0 -and $snapsArr[0].paths) {
+                        $paths = @($snapsArr[0].paths)
+                        Write-DebugLine "  recovered $($paths.Count) paths from restic"
+                    }
+                } catch {
+                    Write-DebugLine "  cache fallback failed: $($_.Exception.Message)"
+                }
+            }
             if (-not $paths -or @($paths).Count -eq 0) {
                 $rightStatus.Text = "(no top-level paths in snapshot)"
                 return
