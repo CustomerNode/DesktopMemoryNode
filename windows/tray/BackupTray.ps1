@@ -623,11 +623,14 @@ function Show-SnapshotsForm {
     $leftStatus.TextAlign  = 'MiddleCenter'
     $split.Panel1.Controls.Add($leftStatus)
 
-    # Right: TreeView of files in selected snapshot
+    # Right: lazy-loaded file tree. Top-level paths come from the snapshot's
+    # metadata (instant; no restic call). Each directory loads its immediate
+    # children only when the user clicks [+] -- so we never scan an entire
+    # 600 GB snapshot just to show what folders exist.
     $treeView = New-Object System.Windows.Forms.TreeView
-    $treeView.Dock = 'Fill'
-    $treeView.Font = $Font.Mono
-    $treeView.HideSelection = $false
+    $treeView.Dock           = 'Fill'
+    $treeView.Font           = $Font.Mono
+    $treeView.HideSelection  = $false
     $split.Panel2.Controls.Add($treeView)
 
     $rightStatus = New-Object System.Windows.Forms.Label
@@ -638,6 +641,10 @@ function Show-SnapshotsForm {
     $rightStatus.Text      = "Pick a save point on the left."
     $rightStatus.TextAlign = 'MiddleCenter'
     $split.Panel2.Controls.Add($rightStatus)
+
+    # Cache of snapshot ID -> top-level paths so the selection handler can
+    # render the tree root without another restic call.
+    $script:SnapshotPaths = @{}
 
     # Populate snapshots (read-only ops use --no-lock so they never wait on a write lock)
     $form.Add_Shown({
@@ -657,6 +664,8 @@ function Show-SnapshotsForm {
                 [void]$item.SubItems.Add($s.short_id)
                 $item.Tag = $s.id
                 [void]$listView.Items.Add($item)
+                # Cache paths for instant tree-root rendering on click
+                $script:SnapshotPaths[$s.id] = @($s.paths)
             }
             $leftStatus.Text = "$($sorted.Count) save point$(if ($sorted.Count -eq 1) {''} else {'s'})"
         } catch {
@@ -664,89 +673,149 @@ function Show-SnapshotsForm {
         }
     }.GetNewClosure())
 
-    # On selection: populate file tree. Capped at $maxNodes to avoid blowing
-    # up WinForms TreeView on huge snapshots (a 600 GB snapshot can have
-    # hundreds of thousands of files; the tree control gets unusable).
+    # Helper: format a byte count for the tree label
+    function Format-TreeSize {
+        param([long]$Bytes)
+        if ($Bytes -ge 1GB) { '{0:N1} GB' -f ($Bytes / 1GB) }
+        elseif ($Bytes -ge 1MB) { '{0:N1} MB' -f ($Bytes / 1MB) }
+        elseif ($Bytes -ge 1KB) { '{0:N0} KB' -f ($Bytes / 1KB) }
+        else { "$Bytes B" }
+    }
+
+    # Helper: list immediate children of a directory inside a snapshot.
+    # Calls `restic ls $sid <path>` (which IS recursive) and filters to the
+    # entries whose path is one level deeper than $Path. Cap at 50000 lines
+    # parsed so a single huge dir never hangs the UI more than a few seconds.
+    function Get-ImmediateChildren {
+        param([string]$SnapshotId, [string]$Path)
+
+        $raw = Invoke-Restic ls --json --no-lock $SnapshotId $Path 2>$null
+        if (-not $raw) { return @() }
+
+        $parentSlash = if ($Path.EndsWith('/')) { $Path } else { $Path + '/' }
+        $children = @()
+        $lineCount = 0
+        foreach ($line in ($raw -split "`n")) {
+            $line = $line.Trim()
+            if (-not $line) { continue }
+            $lineCount++
+            if ($lineCount -gt 50000) { break }
+            try { $obj = $line | ConvertFrom-Json } catch { continue }
+            if (-not $obj -or $obj.struct_type -ne 'node') { continue }
+            if ($obj.path -eq $Path) { continue }
+            if (-not $obj.path.StartsWith($parentSlash)) { continue }
+            $rest = $obj.path.Substring($parentSlash.Length)
+            if ($rest.Contains('/')) { continue }   # nested deeper, skip
+            $children += $obj
+        }
+        # Folders first, then files; both alphabetical
+        $children | Sort-Object @{Expression={ if ($_.type -eq 'dir') {0} else {1} }}, @{Expression={ $_.name }}
+    }
+
+    # Build a tree node for a directory. Marks it as "needs loading" via a
+    # placeholder child so WinForms shows the [+] expand arrow.
+    function New-DirNode {
+        param([string]$DisplayName, [string]$FullPath)
+        $node = New-Object System.Windows.Forms.TreeNode $DisplayName
+        $node.Tag = @{ Path = $FullPath; Loaded = $false }
+        # Add a placeholder so the [+] appears
+        [void]$node.Nodes.Add('Loading...')
+        return $node
+    }
+
+    function New-FileNode {
+        param([string]$Name, [long]$Size)
+        $label = "$Name  ($(Format-TreeSize $Size))"
+        $node = New-Object System.Windows.Forms.TreeNode $label
+        $node.Tag = @{ IsFile = $true }
+        return $node
+    }
+
+    # On snapshot selection: populate top-level paths from snapshot metadata.
+    # No restic ls call -- we already know the paths from `restic snapshots --json`.
     $listView.Add_SelectedIndexChanged({
-        $treeView.Nodes.Clear()
-        if ($listView.SelectedItems.Count -eq 0) { return }
-        $sid = $listView.SelectedItems[0].Tag
-        $rightStatus.Text = "Loading files (large snapshots can take a few seconds)..."
-        [System.Windows.Forms.Application]::DoEvents()
-        $treeView.SuspendLayout()
-        $maxNodes = 5000
+        $treeView.BeginUpdate()
         try {
-            $raw = Invoke-Restic ls --json --no-lock $sid 2>$null
-            if (-not $raw) { $rightStatus.Text = "(empty)"; return }
-            $rootNode = $treeView.Nodes.Add("Save point $($listView.SelectedItems[0].SubItems[2].Text)")
+            $treeView.Nodes.Clear()
+            if ($listView.SelectedItems.Count -eq 0) {
+                $rightStatus.Text = "Pick a save point on the left."
+                return
+            }
+            $sid = $listView.SelectedItems[0].Tag
+            $rightStatus.Text = "Loading folder list..."
+
+            # We stored the snapshot object's paths in a separate dictionary at
+            # populate time; pull them back out (see Add_Shown handler below).
+            $paths = $script:SnapshotPaths[$sid]
+            if (-not $paths -or $paths.Count -eq 0) {
+                $rightStatus.Text = "(no top-level paths in snapshot)"
+                return
+            }
+
+            $rootNode = New-Object System.Windows.Forms.TreeNode `
+                "Save point $($listView.SelectedItems[0].SubItems[2].Text)"
             $rootNode.NodeFont = $Font.BodyBold
-            $count = 0
-            $totalSize = 0L
-            $totalSeen = 0
-            $capped = $false
+            [void]$treeView.Nodes.Add($rootNode)
 
-            foreach ($line in ($raw -split "`n")) {
-                $line = $line.Trim()
-                if (-not $line) { continue }
-                try { $obj = $line | ConvertFrom-Json } catch { continue }
-                if (-not $obj -or $obj.struct_type -ne 'node') { continue }
-                $totalSeen++
-
-                if ($count -ge $maxNodes) { $capped = $true; continue }
-
-                $parts = @(($obj.path -split '/') | Where-Object { $_ })
-                if ($parts.Count -eq 0) { continue }
-
-                $cursor = $rootNode
-                for ($i = 0; $i -lt $parts.Count; $i++) {
-                    $part   = [string]$parts[$i]
-                    $isLeaf = ($i -eq ($parts.Count - 1))
-
-                    $existing = $null
-                    if ($cursor.Nodes.Count -gt 0) {
-                        for ($j = 0; $j -lt $cursor.Nodes.Count; $j++) {
-                            $child = $cursor.Nodes.Item($j)
-                            $childText = [string]$child.Text
-                            if ($childText -eq $part -or $childText.StartsWith($part + '  ')) {
-                                $existing = $child
-                                break
-                            }
-                        }
-                    }
-
-                    if ($existing) {
-                        $cursor = $existing
-                    } else {
-                        $label = $part
-                        if ($isLeaf -and $obj.type -eq 'file') {
-                            $sz = [long]$obj.size
-                            $sizeStr = if ($sz -ge 1MB) { '{0:N1} MB' -f ($sz / 1MB) }
-                                       elseif ($sz -ge 1KB) { '{0:N0} KB' -f ($sz / 1KB) }
-                                       else { "$sz B" }
-                            $label = "$part  ($sizeStr)"
-                            $totalSize += $sz
-                        }
-                        $newNode = $cursor.Nodes.Add([string]$label)
-                        $cursor = $newNode
-                    }
+            foreach ($p in $paths) {
+                # snapshot.paths stores Windows-style ("C:\Users\..."), but restic ls
+                # wants POSIX ("/C/Users/..."). Convert for the lookup; display as-is.
+                $display = $p
+                $resticPath = $p
+                if ($p -match '^([A-Za-z]):\\(.*)') {
+                    $resticPath = '/' + $matches[1] + '/' + ($matches[2] -replace '\\', '/')
                 }
-                $count++
+                $childNode = New-DirNode -DisplayName $display -FullPath $resticPath
+                [void]$rootNode.Nodes.Add($childNode)
             }
             $rootNode.Expand()
-            $sizeFmt = if ($totalSize -ge 1MB) { '{0:N2} MB' -f ($totalSize / 1MB) }
-                       elseif ($totalSize -ge 1KB) { '{0:N1} KB' -f ($totalSize / 1KB) }
-                       else { "$totalSize B" }
-            if ($capped) {
-                $rightStatus.Text = "Showing first $count of $totalSeen items (large snapshot truncated for display)"
-            } else {
-                $rightStatus.Text = "$count items, total $sizeFmt"
-            }
+            $rightStatus.Text = "Click [+] on a folder to load its contents."
         } catch {
             $rightStatus.Text = "Couldn't load: " + $_.Exception.Message
-            Write-DebugLine "Snapshots tree-load EXCEPTION: $($_.Exception.Message)"
-            Write-DebugLine "  Stack: $($_.ScriptStackTrace)"
+            Write-DebugLine "Snapshot select EXCEPTION: $($_.Exception.Message)"
         } finally {
-            $treeView.ResumeLayout()
+            $treeView.EndUpdate()
+        }
+    }.GetNewClosure())
+
+    # Lazy-load: when a directory node is expanded, fetch its immediate children
+    # (one restic ls call scoped to that path). Replace the placeholder.
+    $treeView.add_BeforeExpand({
+        param($s, $e)
+        $node = $e.Node
+        $tag  = $node.Tag
+        if (-not $tag -or -not $tag.ContainsKey('Path') -or $tag.Loaded) { return }
+
+        $sid  = $listView.SelectedItems[0].Tag
+        $path = $tag.Path
+
+        # Show "Loading..." in the placeholder + status bar
+        $node.Nodes[0].Text = "Loading $path ..."
+        $rightStatus.Text   = "Loading $path ..."
+        [System.Windows.Forms.Application]::DoEvents()
+
+        try {
+            $children = @(Get-ImmediateChildren -SnapshotId $sid -Path $path)
+            $treeView.BeginUpdate()
+            $node.Nodes.Clear()
+            foreach ($c in $children) {
+                if ($c.type -eq 'dir') {
+                    [void]$node.Nodes.Add((New-DirNode -DisplayName $c.name -FullPath $c.path))
+                } else {
+                    [void]$node.Nodes.Add((New-FileNode -Name $c.name -Size ([long]$c.size)))
+                }
+            }
+            $tag.Loaded = $true
+            $node.Tag   = $tag
+            $treeView.EndUpdate()
+
+            $dirCount  = ($children | Where-Object { $_.type -eq 'dir' }).Count
+            $fileCount = ($children | Where-Object { $_.type -eq 'file' }).Count
+            $rightStatus.Text = "$path : $dirCount folder(s), $fileCount file(s)"
+        } catch {
+            $node.Nodes.Clear()
+            [void]$node.Nodes.Add("(error loading: $($_.Exception.Message))")
+            $rightStatus.Text = "Couldn't load $path : $($_.Exception.Message)"
         }
     }.GetNewClosure())
 
