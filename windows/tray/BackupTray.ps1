@@ -69,6 +69,12 @@ $libPath  = Join-Path $here '..\lib\Memorybox.psm1'
 $repoRoot = (Resolve-Path (Join-Path $here '..\..')).Path
 Import-Module $libPath -Force
 
+# Script-scope cache, MUST be initialized at top-level. WinForms event handler
+# closures can't see script-scope vars assigned inside other functions in some
+# PS 5.1 configurations -- caused null-indexing crashes when the user selected
+# a snapshot in the browser.
+$script:SnapshotPaths = @{}
+
 # =====================================================================================
 # Visual system -- colors, fonts, helpers
 # =====================================================================================
@@ -646,11 +652,8 @@ function Show-SnapshotsForm {
     $rightStatus.TextAlign = 'MiddleCenter'
     $split.Panel2.Controls.Add($rightStatus)
 
-    # Cache of snapshot ID -> top-level paths so the selection handler can
-    # render the tree root without another restic call.
-    $script:SnapshotPaths = @{}
-
     # Populate snapshots (read-only ops use --no-lock so they never wait on a write lock)
+    # NOTE: $script:SnapshotPaths is initialized at script scope at top of file.
     $form.Add_Shown({
         try {
             $raw = Invoke-Restic snapshots --json --no-lock 2>$null
@@ -755,9 +758,11 @@ function Show-SnapshotsForm {
             $rightStatus.Text = "Loading folder list..."
 
             # We stored the snapshot object's paths in a separate dictionary at
-            # populate time; pull them back out (see Add_Shown handler below).
+            # populate time; pull them back out. Guard against the dict itself
+            # being null (PS 5.1 WinForms event-handler scope quirk).
+            if ($null -eq $script:SnapshotPaths) { $script:SnapshotPaths = @{} }
             $paths = $script:SnapshotPaths[$sid]
-            if (-not $paths -or $paths.Count -eq 0) {
+            if (-not $paths -or @($paths).Count -eq 0) {
                 $rightStatus.Text = "(no top-level paths in snapshot)"
                 return
             }
@@ -863,15 +868,34 @@ function Show-SnapshotsForm {
             $msg = $_.Exception.Message
             $stk = $_.ScriptStackTrace
             $line = $_.InvocationInfo.ScriptLineNumber
+            $pos  = $_.InvocationInfo.PositionMessage
+            $type = $_.Exception.GetType().FullName
+
+            # Dump the full error to a known file so it's recoverable without
+            # asking the user to read tiny status bar text.
+            $crashFile = Join-Path $env:LOCALAPPDATA 'DesktopMemoryNode\last-browser-error.txt'
+            try {
+                $report = @"
+TIME:    $((Get-Date).ToString('o'))
+LINE:    $line
+TYPE:    $type
+MESSAGE: $msg
+
+POSITION:
+$pos
+
+STACK:
+$stk
+"@
+                [IO.File]::WriteAllText($crashFile, $report, [Text.Encoding]::UTF8)
+            } catch {}
+
             Write-DebugLine "BeforeExpand EXCEPTION at line ${line}: $msg"
             Write-DebugLine "  Stack: $stk"
-            Write-DebugLine "  Position: $($_.InvocationInfo.PositionMessage)"
             try {
                 $node.Nodes.Clear()
                 [void]$node.Nodes.Add("(error: $msg)")
             } catch {}
-            # Surface the line number in the status so the user can read it back to me.
-            # Trim long messages to keep the status bar readable.
             $shortMsg = if ($msg.Length -gt 100) { $msg.Substring(0,100) + '...' } else { $msg }
             $rightStatus.Text = "Couldn't load (line ${line}): $shortMsg"
         }
