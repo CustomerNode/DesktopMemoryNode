@@ -651,10 +651,15 @@ function Show-SnapshotsForm {
         try {
             $raw = Invoke-Restic snapshots --json --no-lock 2>$null
             if (-not $raw) { $leftStatus.Text = "No save points yet."; return }
-            $snaps = @(($raw | Out-String).Trim() | ConvertFrom-Json)
+            # ConvertFrom-Json on a JSON array returns a .NET array, which the
+            # pipeline emits as a SINGLE item; @() wraps that into [array-of-array].
+            # Explicitly normalize to a flat array.
+            $parsed = ($raw | Out-String).Trim() | ConvertFrom-Json
+            $snaps = if ($null -eq $parsed) { @() }
+                     elseif ($parsed -is [array]) { $parsed }
+                     else { @($parsed) }
             if ($snaps.Count -eq 0) { $leftStatus.Text = "No save points yet."; return }
-            # Defensive filter: anything without a .time field would crash Sort-Object
-            $sorted = @($snaps | Where-Object { $_ -and $_.time }) | Sort-Object @{Expression={[datetime]$_.time}} -Descending
+            $sorted = $snaps | Where-Object { $_ -and $_.time } | Sort-Object @{Expression={[datetime]$_.time}} -Descending
             foreach ($s in $sorted) {
                 $kind = if ($s.tags -contains 'manual')    { 'You asked' }
                          elseif ($s.tags -contains 'scheduled') { 'Auto-save' }
@@ -1116,14 +1121,17 @@ function Start-TestRestore {
             return
         }
 
-        $snaps = @(($rawSnaps | Out-String).Trim() | ConvertFrom-Json)
+        $parsedSnaps = ($rawSnaps | Out-String).Trim() | ConvertFrom-Json
+        $snaps = if ($null -eq $parsedSnaps) { @() }
+                 elseif ($parsedSnaps -is [array]) { $parsedSnaps }
+                 else { @($parsedSnaps) }
         Write-DebugLine "Start-TestRestore: parsed $($snaps.Count) snapshot(s)"
         if ($snaps.Count -eq 0) {
             Close-WorkingDialog $progress
             Show-TestRestoreResult -Title "No snapshots yet" -Body "There aren't any backups in your Memory Box to test. Save your files at least once first." -Kind Error
             return
         }
-        $newest = @($snaps | Where-Object { $_ -and $_.time }) | Sort-Object @{Expression={[datetime]$_.time}} -Descending | Select-Object -First 1
+        $newest = $snaps | Where-Object { $_ -and $_.time } | Sort-Object @{Expression={[datetime]$_.time}} -Descending | Select-Object -First 1
         Write-DebugLine "Start-TestRestore: newest snapshot $($newest.short_id)"
 
         Write-DebugLine "Start-TestRestore: invoking restic ls"
