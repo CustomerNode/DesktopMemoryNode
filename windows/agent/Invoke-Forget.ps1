@@ -49,15 +49,19 @@ function Get-Snapshots {
     if (-not $json -or $json -eq 'null') { return @() }
     $parsed = $json | ConvertFrom-Json
     if (-not $parsed) { return @() }
-    $out = foreach ($item in @($parsed)) {
-        if (-not $item) { continue }
-        [PSCustomObject]@{
+    # PS 5.1: ConvertFrom-Json on an array passes through the pipeline as a
+    # single item; normalize to a flat array of snapshot objects.
+    $items = if ($parsed -is [array]) { $parsed } else { @($parsed) }
+    $out = New-Object System.Collections.Generic.List[PSCustomObject]
+    foreach ($item in $items) {
+        if (-not $item -or -not $item.time) { continue }
+        $out.Add([PSCustomObject]@{
             Id   = $item.id
             Time = [datetime]$item.time
             Tags = $item.tags
-        }
+        })
     }
-    @($out) | Sort-Object Time -Descending
+    $out | Sort-Object Time -Descending
 }
 
 $lock = $null

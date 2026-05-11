@@ -62,12 +62,14 @@ try {
     try { Invoke-Restic unlock --remove-all 2>$null | Out-Null } catch {}
     Write-DmnLog "Test-restore starting (scratch=$scratchRoot, max-file=$MaxFileSizeBytes bytes)" -Kind 'verify'
 
-    # Pick newest snapshot
+    # Pick newest snapshot. PS 5.1 ConvertFrom-Json returns a .NET array which
+    # the pipeline emits as one item -- normalize before iterating.
     $raw = Invoke-Restic snapshots --json 2>$null
     if (-not $raw) { throw "No snapshots in repo to test." }
-    $snapshots = @(($raw | Out-String).Trim() | ConvertFrom-Json)
-    if (-not $snapshots -or $snapshots.Count -eq 0) { throw "No snapshots in repo." }
-    $newest = $snapshots | Sort-Object @{Expression={[datetime]$_.time}} -Descending | Select-Object -First 1
+    $parsed = ($raw | Out-String).Trim() | ConvertFrom-Json
+    $snapshots = if ($null -eq $parsed) { @() } elseif ($parsed -is [array]) { $parsed } else { @($parsed) }
+    if ($snapshots.Count -eq 0) { throw "No snapshots in repo." }
+    $newest = $snapshots | Where-Object { $_ -and $_.time } | Sort-Object @{Expression={[datetime]$_.time}} -Descending | Select-Object -First 1
     Write-DmnLog "Using snapshot: $($newest.short_id) at $($newest.time)" -Kind 'verify'
 
     # List files in the snapshot, pick a small one. Tiered: prefer tiny files
